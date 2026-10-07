@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .installer import InstallPlan, install_artifact, verify_sha256
 from .preflight import _read_os_release
+from .env_setup import prompt_env, write_env
 
 
 def main() -> None:
@@ -19,7 +20,25 @@ def main() -> None:
     parser.add_argument("--binary", type=Path, default=Path("/usr/local/bin/xray"))
     parser.add_argument("--config", type=Path, default=Path("/usr/local/etc/xray/config.json"))
     parser.add_argument("--unit", type=Path, default=Path("/etc/systemd/system/vless-control-xray.service"))
+    parser.add_argument("--env", type=Path, default=Path(".env"), help="where to write prompted settings")
+    parser.add_argument("--configure-env", action="store_true", help="prompt for bot/Xray settings and write env file")
+    parser.add_argument("--force-env", action="store_true", help="replace an existing env file after explicit confirmation")
     args = parser.parse_args()
+
+    if args.configure_env:
+        try:
+            if args.env.exists():
+                if not args.force_env:
+                    raise FileExistsError(f"{args.env} уже существует; используйте --force-env после резервирования")
+                answer = input(f"Файл {args.env} будет заменён. Продолжить? [y/N]: ").strip().lower()
+                if answer != "y":
+                    raise SystemExit("Настройка отменена")
+            env_path = write_env(prompt_env(), args.env)
+            print(f"Файл настроек записан: {env_path} (права 600).")
+        except (KeyboardInterrupt, EOFError):
+            raise SystemExit("Настройка отменена")
+        except Exception as exc:
+            raise SystemExit(f"Настройка .env остановлена ({type(exc).__name__}): {exc}") from exc
 
     distro, release = _read_os_release()
     existing_xray = args.binary.exists()
