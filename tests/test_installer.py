@@ -11,6 +11,21 @@ from unittest.mock import patch
 from vless_control.installer import InstallPlan, backup_paths, find_binary, safe_members, verify_sha256
 
 
+class InstallerScriptTests(unittest.TestCase):
+    def test_script_has_syntax_and_explicit_non_autostart(self):
+        import subprocess
+        script = Path(__file__).resolve().parents[1] / "install.sh"
+        result = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = script.read_text()
+        self.assertIn("systemctl daemon-reload", text)
+        import re
+        self.assertIsNone(re.search(r"(?m)^\s*systemctl enable", text))
+        self.assertIn('"$XRAY_BINARY"', text)
+        self.assertIn('"$XRAY_CONFIG_PATH"', text)
+        self.assertIn("XRAY_SERVICE}.service", text)
+        self.assertIn("sha256sum --check", text)
+
 class InstallerTests(unittest.TestCase):
     def test_plan_refuses_existing_xray_without_explicit_replace(self):
         with tempfile.TemporaryDirectory() as tmp:
