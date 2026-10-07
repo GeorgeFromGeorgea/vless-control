@@ -67,6 +67,8 @@ class Registry:
             raise ValueError("profile name and host are required")
         if not 1 <= int(port) <= 65535:
             raise ValueError("invalid port")
+        if security not in {"reality", "tls", "none"} or transport not in {"tcp", "ws"}:
+            raise ValueError("unsupported security/transport")
         if security == "reality" and (transport != "tcp" or not sni or not public_key or not short_id):
             raise ValueError("REALITY/TCP requires SNI, public key, and short ID")
         with self._connect() as db:
@@ -84,7 +86,7 @@ class Registry:
                 profile = db.execute("SELECT id FROM profiles WHERE id=? AND active=1", (pid,)).fetchone()
                 if not profile:
                     raise ValueError(f"active profile {pid} not found")
-                db.execute("INSERT OR IGNORE INTO user_profiles(user_id,profile_id) VALUES (?,?)", (user_id,pid))
+                db.execute("INSERT OR IGNORE INTO user_profiles(user_id,profile_id) VALUES (?,?)", (user_id, pid))
 
     def list_connections(self, user_id: int) -> list[dict]:
         with self._connect() as db:
@@ -93,6 +95,19 @@ class Registry:
                 WHERE u.id=? AND u.active=1 AND p.active=1 ORDER BY p.name""", (user_id,)).fetchall()
             return [dict(row) for row in rows]
 
+    def xray_assignments(self) -> dict[str, list[dict]]:
+        """Return managed profile names as inbound tags, including empty clients."""
+        with self._connect() as db:
+            profiles = db.execute("SELECT name FROM profiles WHERE active=1 ORDER BY name").fetchall()
+            rows = db.execute("""SELECT p.name AS inbound_tag, u.client_uuid
+                FROM users u JOIN user_profiles up ON up.user_id=u.id
+                JOIN profiles p ON p.id=up.profile_id
+                WHERE u.active=1 AND p.active=1 ORDER BY p.name,u.id""").fetchall()
+        result = {row["name"]: [] for row in profiles}
+        for row in rows:
+            result[row["inbound_tag"]].append({"id": row["client_uuid"], "email": f"vless-control-{row['client_uuid']}"})
+        return result
+
     def deactivate_user(self, user_id: int) -> bool:
         with self._connect() as db:
             cur = db.execute("UPDATE users SET active=0 WHERE id=? AND active=1", (user_id,))
@@ -100,15 +115,21 @@ class Registry:
 
 
 def vless_uri(connection: dict) -> str:
-    """Render one import URI from a validated registry record; caller must protect it."""
+    """Render a credential URI from a validated record; caller must protect it."""
     from urllib.parse import urlencode, quote
 
-    q = {"encryption": "none", "type": connection["transport"], "security": connection["security"]}
-    if connection["security"] == "reality":
-        q.update({"sni": connection["sni"], "pbk": connection["public_key"], "sid": connection["short_id"]})
-    elif connection["security"] == "tls":
+    security = connection["security"]
+    transport = connection["transport"]
+    if security not in {"reality", "tls", "none"} or transport not in {"tcp", "ws"}:
+        raise ValueError("unsupported security/transport")
+    if security == "reality" and transport != "tcp":
+        raise ValueError("REALITY requires TCP")
+    q = {"encryption": "none", "type": transport, "security": security}
+    if security == "reality":
+        q.update({"sni": connection["sni"], "pbk": connection["public_key"], "sid": connection["short_id"], "flow": "xtls-rprx-vision"})
+    elif security == "tls":
         q["sni"] = connection["sni"]
-    if connection["transport"] == "ws":
+    if transport == "ws":
         q.update({"host": connection["host"], "path": connection["path"]})
     label = quote(f"{connection['label']} - {connection['name']}", safe="")
     return f"vless://{connection['client_uuid']}@{connection['host']}:{connection['port']}?{urlencode(q)}#{label}"

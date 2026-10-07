@@ -14,7 +14,12 @@ def admins_from_env() -> set[int]:
 
 
 def authorized(update: Update) -> bool:
-    return bool(update.effective_user and update.effective_user.id in admins_from_env())
+    return bool(
+        update.effective_user
+        and update.effective_chat
+        and update.effective_chat.type == "private"
+        and update.effective_user.id in admins_from_env()
+    )
 
 
 def registry() -> Registry:
@@ -25,7 +30,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not authorized(update):
         await update.effective_message.reply_text("Доступ запрещён.")
         return
-    keyboard = [["👤 Пользователи", "➕ Новый ключ"], ["🔑 Мои профили"]]
+    keyboard = [["👤 Пользователи", "➕ Новый ключ"], ["🔑 Профили", "🧩 Назначить профили"], ["🔗 Выдать ссылки"]]
     await update.effective_message.reply_text(
         "Панель управления VLESS. Ссылки — секреты доступа.",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True),
@@ -67,7 +72,118 @@ async def profiles(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text("\n".join(f"#{r['id']} {r['name']} {r['host']}:{r['port']} ({r['security']}/{r['transport']})" for r in rows) or "Профилей нет.")
 
 
-async def assign(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def choose_assign(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not authorized(update):
+        return
+    with registry()._connect() as conn:
+        users = conn.execute("SELECT id,label FROM users WHERE active=1 ORDER BY id DESC LIMIT 20").fetchall()
+        profiles = conn.execute("SELECT id,name,port FROM profiles WHERE active=1 ORDER BY id").fetchall()
+    if not users or not profiles:
+        await update.effective_message.reply_text("Сначала добавьте пользователя (/new_user) и профили в реестр.")
+        return
+    context.user_data["assign_users"] = {str(u["id"]): u["label"] for u in users}
+    context.user_data["assign_profiles"] = [dict(p) for p in profiles]
+    buttons = [[f"#{u['id']} {u['label']}" ] for u in users]
+    context.user_data["awaiting_assign_user"] = True
+    await update.effective_message.reply_text("Выберите пользователя:", reply_markup=ReplyKeyboardMarkup(buttons + [["Отмена"]], resize_keyboard=True, one_time_keyboard=True))
+
+
+async def choose_links(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not authorized(update):
+        return
+    with registry()._connect() as conn:
+        rows = conn.execute("SELECT id,label FROM users WHERE active=1 ORDER BY id DESC LIMIT 20").fetchall()
+    if not rows:
+        await update.effective_message.reply_text("Пока нет активных пользователей.")
+        return
+    context.user_data["link_users"] = {str(r["id"]): r["label"] for r in rows}
+    context.user_data["awaiting_link_user"] = True
+    buttons = [[f"#{r['id']} {r['label']}"] for r in rows]
+    await update.effective_message.reply_text("Кому показать персональные профили? Ссылки являются секретами.", reply_markup=ReplyKeyboardMarkup(buttons + [["Отмена"]], resize_keyboard=True, one_time_keyboard=True))
+
+
+async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not authorized(update):
+        return
+    text = (update.effective_message.text or "").strip()
+    if text == "Отмена":
+        context.user_data.pop("awaiting_assign_user", None)
+        context.user_data.pop("awaiting_assign_profiles", None)
+        context.user_data.pop("awaiting_link_user", None)
+        context.user_data.pop("awaiting_new_label", None)
+        await update.effective_message.reply_text("Отменено.")
+        return
+    if context.user_data.get("awaiting_assign_user"):
+        user_id = text.split(maxsplit=1)[0].lstrip("#")
+        if user_id not in context.user_data.get("assign_users", {}):
+            await update.effective_message.reply_text("Выберите пользователя кнопкой или нажмите «Отмена».")
+            return
+        context.user_data["selected_assign_user"] = int(user_id)
+        context.user_data.pop("awaiting_assign_user", None)
+        context.user_data["awaiting_assign_profiles"] = True
+        options = context.user_data["assign_profiles"]
+        buttons = [[f"#{p['id']} {p['name']} — :{p['port']}"] for p in options]
+        await update.effective_message.reply_text("Выберите один профиль за раз, либо отправьте список ID через запятую для нескольких портов.", reply_markup=ReplyKeyboardMarkup(buttons + [["Отмена"]], resize_keyboard=True, one_time_keyboard=True))
+        return
+    if context.user_data.get("awaiting_assign_profiles"):
+        try:
+            ids = [int(part.strip().lstrip("#").split()[0]) for part in text.split(",")]
+            if not ids or len(set(ids)) != len(ids) or any(int(p["id"]) not in ids for p in context.user_data["assign_profiles"]):
+                raise ValueError
+            registry().assign_profiles(context.user_data["selected_assign_user"], ids)
+            context.user_data.pop("awaiting_assign_profiles", None)
+            context.user_data.pop("assign_profiles", None)
+            context.user_data.pop("assign_users", None)
+            context.user_data.pop("selected_assign_user", None)
+            await update.effective_message.reply_text("Профили назначены. Для выдачи нажмите «Выдать ссылки» или отправьте /links ID.")
+        except Exception:
+            await update.effective_message.reply_text("Не получилось распознать выбор. Отправьте ID профилей через запятую или «Отмена».")
+        return
+    if context.user_data.get("awaiting_link_user"):
+        user_id = text.split(maxsplit=1)[0].lstrip("#")
+        if user_id not in context.user_data.get("link_users", {}):
+            await update.effective_message.reply_text("Выберите пользователя кнопкой или нажмите «Отмена».")
+            return
+        context.user_data.pop("awaiting_link_user", None)
+        context.user_data.pop("link_users", None)
+        await send_links(update, int(user_id))
+        return
+    if text == "👤 Пользователи":
+        await users(update, context)
+    elif text == "➕ Новый ключ":
+        context.user_data["awaiting_new_label"] = True
+        await update.effective_message.reply_text("Введите метку нового пользователя (1–80 символов), либо нажмите «Отмена».")
+    elif context.user_data.get("awaiting_new_label"):
+        context.user_data.pop("awaiting_new_label", None)
+        try:
+            created = registry().add_user(text)
+            await update.effective_message.reply_text(f"Создан пользователь #{created['id']}. Теперь нажмите «Назначить профили».")
+        except Exception as exc:
+            await update.effective_message.reply_text(f"Не удалось создать запись ({type(exc).__name__}). Проверьте метку.")
+    elif text == "🔑 Профили":
+        await profiles(update, context)
+    elif text == "🔗 Выдать ссылки":
+        await choose_links(update, context)
+    elif text == "🧩 Назначить профили":
+        await choose_assign(update, context)
+
+
+async def send_links(update: Update, user_id: int) -> None:
+    records = registry().list_connections(user_id)
+    if not records:
+        await update.effective_message.reply_text("У этого пользователя нет активных назначенных профилей.")
+        return
+    # Deliver in the existing owner/admin control chat; never log URI text.
+    await update.effective_message.reply_text("Внимание: следующие ссылки дают доступ. Перешлите их пользователю только в личном чате.")
+    for item in records:
+        await update.effective_message.reply_text(vless_uri(item))
+
+
+async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await button_router(update, context)
+
+
+async def assign_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not authorized(update):
         return
     try:
@@ -81,19 +197,13 @@ async def assign(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.effective_message.reply_text("Формат: /assign USER_ID PROFILE_ID[,PROFILE_ID]")
 
 
-async def links(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def links_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not authorized(update):
         return
     try:
         if len(context.args) != 1:
             raise ValueError
-        records = registry().list_connections(int(context.args[0]))
-        if not records:
-            await update.effective_message.reply_text("Активных профилей не найдено.")
-            return
-        await update.effective_message.reply_text("Ссылки — секреты доступа. Передавайте пользователю лично, не публикуйте в группах.")
-        for item in records:
-            await update.effective_message.reply_text(vless_uri(item))
+        await send_links(update, int(context.args[0]))
     except Exception:
         await update.effective_message.reply_text("Формат: /links USER_ID")
 
@@ -104,21 +214,13 @@ async def revoke(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         user_id = int(context.args[0])
         ok = registry().deactivate_user(user_id)
-        await update.effective_message.reply_text("Деактивирован." if ok else "Активный пользователь не найден.")
+        await update.effective_message.reply_text("Запись деактивирована. Runtime-sync ещё требуется для фактического отзыва на Xray." if ok else "Активный пользователь не найден.")
     except Exception:
         await update.effective_message.reply_text("Формат: /revoke USER_ID")
 
 
-async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not authorized(update):
-        return
-    text = update.effective_message.text
-    if text == "👤 Пользователи":
-        await users(update, context)
-    elif text == "🔑 Мои профили":
-        await profiles(update, context)
-    elif text == "➕ Новый ключ":
-        await update.effective_message.reply_text("Используйте /new_user ИМЯ, затем назначьте профили.")
+async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await start(update, context)
 
 
 def main() -> None:
@@ -126,12 +228,12 @@ def main() -> None:
     if not token or not admins_from_env():
         raise SystemExit("Set TELEGRAM_BOT_TOKEN and at least one numeric TELEGRAM_ADMIN_IDS; refusing open access")
     app = Application.builder().token(token).build()
-    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("start", main_menu))
     app.add_handler(CommandHandler("new_user", new_user))
     app.add_handler(CommandHandler("users", users))
     app.add_handler(CommandHandler("profiles", profiles))
-    app.add_handler(CommandHandler("assign", assign))
-    app.add_handler(CommandHandler("links", links))
+    app.add_handler(CommandHandler("assign", assign_command))
+    app.add_handler(CommandHandler("links", links_command))
     app.add_handler(CommandHandler("revoke", revoke))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
     app.run_polling()

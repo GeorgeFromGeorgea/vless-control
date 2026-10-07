@@ -10,6 +10,7 @@ dependencies = ["python-telegram-bot==22.5"]
 
 [project.scripts]
 vless-control-bot = "vless_control.bot:main"
+vless-control-sync = "vless_control.sync:main"
 
 [tool.setuptools.packages.find]
 include = ["vless_control*"]
