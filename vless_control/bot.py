@@ -5,6 +5,7 @@ import os
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
+from .profile_wizard import PROMPTS, accept_value, next_field
 from .registry import Registry, vless_uri
 
 
@@ -30,7 +31,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not authorized(update):
         await update.effective_message.reply_text("Доступ запрещён.")
         return
-    keyboard = [["👤 Пользователи", "➕ Новый ключ"], ["🔑 Профили", "🧩 Назначить профили"], ["🔗 Выдать ссылки"]]
+    keyboard = [["👤 Пользователи", "➕ Новый ключ"], ["🔑 Профили", "➕ Профиль"], ["🧩 Назначить профили", "🔗 Выдать ссылки"]]
     await update.effective_message.reply_text(
         "Панель управления VLESS. Ссылки — секреты доступа.",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True),
@@ -107,10 +108,8 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     text = (update.effective_message.text or "").strip()
     if text == "Отмена":
-        context.user_data.pop("awaiting_assign_user", None)
-        context.user_data.pop("awaiting_assign_profiles", None)
-        context.user_data.pop("awaiting_link_user", None)
-        context.user_data.pop("awaiting_new_label", None)
+        for key in ("awaiting_assign_user", "awaiting_assign_profiles", "awaiting_link_user", "awaiting_new_label", "profile_values"):
+            context.user_data.pop(key, None)
         await update.effective_message.reply_text("Отменено.")
         return
     if context.user_data.get("awaiting_assign_user"):
@@ -148,6 +147,35 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         context.user_data.pop("link_users", None)
         await send_links(update, int(user_id))
         return
+    if context.user_data.get("awaiting_new_label"):
+        context.user_data.pop("awaiting_new_label", None)
+        try:
+            created = registry().add_user(text)
+            await update.effective_message.reply_text(f"Создан пользователь #{created['id']}. Теперь нажмите «Назначить профили».")
+        except Exception as exc:
+            await update.effective_message.reply_text(f"Не удалось создать запись ({type(exc).__name__}). Проверьте метку.")
+        return
+    if context.user_data.get("profile_values") is not None:
+        values = context.user_data["profile_values"]
+        field = next_field(values)
+        try:
+            values = accept_value(values, field, text)
+        except ValueError as exc:
+            await update.effective_message.reply_text(f"Ошибка: {exc}\n{PROMPTS[field]}")
+            return
+        context.user_data["profile_values"] = values
+        field = next_field(values)
+        if field is None:
+            try:
+                profile_id = registry().add_profile(**values)
+                context.user_data.pop("profile_values", None)
+                await update.effective_message.reply_text(f"Профиль #{profile_id} создан. Теперь его можно назначить пользователю.")
+            except Exception as exc:
+                await update.effective_message.reply_text(f"Профиль не создан ({type(exc).__name__}). Проверьте данные и повторите.")
+                context.user_data.pop("profile_values", None)
+        else:
+            await update.effective_message.reply_text(PROMPTS[field])
+        return
     if text == "👤 Пользователи":
         await users(update, context)
     elif text == "➕ Новый ключ":
@@ -160,6 +188,9 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await update.effective_message.reply_text(f"Создан пользователь #{created['id']}. Теперь нажмите «Назначить профили».")
         except Exception as exc:
             await update.effective_message.reply_text(f"Не удалось создать запись ({type(exc).__name__}). Проверьте метку.")
+    elif text == "➕ Профиль":
+        context.user_data["profile_values"] = {}
+        await update.effective_message.reply_text(PROMPTS["name"])
     elif text == "🔑 Профили":
         await profiles(update, context)
     elif text == "🔗 Выдать ссылки":
@@ -212,11 +243,17 @@ async def revoke(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not authorized(update):
         return
     try:
-        user_id = int(context.args[0])
-        ok = registry().deactivate_user(user_id)
-        await update.effective_message.reply_text("Запись деактивирована. Runtime-sync ещё требуется для фактического отзыва на Xray." if ok else "Активный пользователь не найден.")
+        if len(context.args) == 2 and context.args[0] == "confirm":
+            user_id = int(context.args[1])
+            ok = registry().deactivate_user(user_id)
+            await update.effective_message.reply_text("Запись деактивирована. Runtime-sync нужен для фактического отзыва в Xray." if ok else "Активный пользователь не найден.")
+        elif len(context.args) == 1:
+            user_id = int(context.args[0])
+            await update.effective_message.reply_text(f"Подтвердите деактивацию пользователя #{user_id}: /revoke confirm {user_id}. Это отключит запись в реестре; для удаления из работающего Xray понадобится синхронизация.")
+        else:
+            raise ValueError
     except Exception:
-        await update.effective_message.reply_text("Формат: /revoke USER_ID")
+        await update.effective_message.reply_text("Формат: /revoke USER_ID, затем /revoke confirm USER_ID")
 
 
 async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

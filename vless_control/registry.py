@@ -125,6 +125,8 @@ def vless_uri(connection: dict) -> str:
     if security == "reality" and transport != "tcp":
         raise ValueError("REALITY requires TCP")
     q = {"encryption": "none", "type": transport, "security": security}
+    if security == "none" and transport == "tcp":
+        q.pop("security")
     if security == "reality":
         q.update({"sni": connection["sni"], "pbk": connection["public_key"], "sid": connection["short_id"], "flow": "xtls-rprx-vision"})
     elif security == "tls":
