@@ -1,42 +1,80 @@
 # VLESS Control
 
-Self-hosted Xray/VLESS management project with a private Telegram admin bot.
+Проект для самостоятельного управления Xray/VLESS через административного Telegram-бота.
 
-> This is a development project, not a turnkey VPN installer. It supports syncing active registry UUIDs into selected **existing** Xray VLESS inbounds. It does not install Xray, create inbounds, configure DNS/firewalls, or guarantee access through a particular Wi-Fi or mobile operator. Review config changes before applying them to a live host.
+> **Важно:** это текущая версия разработки, а не готовый VPN-инсталлятор. Проект умеет синхронизировать UUID из локального реестра с выбранными уже существующими VLESS-inbound в Xray. Он пока не устанавливает Xray, не создаёт inbound, не настраивает DNS, сертификаты и firewall, а также не гарантирует работу через конкретного мобильного оператора или Wi‑Fi.
 
-**Supported development targets:** Ubuntu Server 22.04/24.04, Debian 12. **Python:** 3.11+.
+**Целевые ОС:** Ubuntu Server 22.04/24.04 и Debian 12.
 
-## Current functionality
+**Python:** 3.11+.
 
-- SQLite registry for users, unique UUIDs, named profiles, and assignments.
-- Individual UUID per user, reused across that user's assigned profiles/ports.
-- VLESS link generation; Reality links include `flow=xtls-rprx-vision`.
-- Private-chat-only Telegram bot, numeric admin allowlist, guided buttons for user creation/profile assignment/link retrieval.
-- Xray sync CLI: dry-run by default; `--apply` is required to change an existing config.
-- Sync preserves unrelated inbounds/settings, but replaces `settings.clients` for each profile inbound managed by the registry.
-- Apply validates with `xray run -test -config`, writes a verified timestamped backup, atomically replaces the config, validates again, restarts the configured systemd service, and restores the old file on failure.
+## Возможности текущей версии
 
-## Not implemented
+- SQLite-реестр пользователей, UUID, профилей подключения и назначений.
+- Индивидуальный UUID для каждого пользователя.
+- Несколько профилей/портов для одного пользователя с одним UUID.
+- Генерация VLESS-ссылок; ссылки REALITY содержат `flow=xtls-rprx-vision`.
+- Telegram-бот только для разрешённых администраторов.
+- Проверка числовых Telegram ID и запрет административных действий в группах.
+- Кнопки для создания пользователей, просмотра профилей, назначения профилей и выдачи ссылок.
+- Синхронизация активных UUID с существующим Xray-конфигом.
+- Режим предварительного просмотра без изменений (`dry-run`).
+- Резервная копия, проверка Xray-конфига, атомарная замена и попытка отката при ошибке перезапуска.
 
-No Xray installation/upgrades/uninstaller, host preflight, firewall or certificate automation, inbound/profile wizard, expiry/traffic quota, end-user bot, audited secret delivery, VM integration tests, or real carrier testing. Deactivating a user in SQLite alone does not revoke a live connection: run the sync command to reconcile the Xray config. Profiles must exist in both the registry and server config; profile name must match the Xray inbound `tag`.
+## Что пока не реализовано
 
-## Local install and bot setup
+Пока отсутствуют:
+
+- установка, обновление и удаление Xray;
+- автоматическая настройка firewall, DNS и TLS-сертификатов;
+- создание inbound-профилей через Telegram;
+- срок действия ключей и лимиты трафика;
+- пользовательский Telegram-интерфейс;
+- подписки и общие UUID;
+- полноценный аудит действий;
+- интеграционные тесты на виртуальных серверах;
+- проверка работы через реальные российские Wi‑Fi и мобильные сети.
+
+Деактивация пользователя в SQLite сама по себе ещё не отключает ключ в работающем Xray. После деактивации нужно выполнить синхронизацию конфигурации.
+
+## Архитектура
+
+```text
+Администратор Telegram
+        │
+        ▼
+Telegram-бот ──> SQLite-реестр
+                    │
+                    ▼
+             Xray sync / проверка
+                    │
+                    ▼
+         существующий Xray config.json
+```
+
+Профиль из реестра связывается с inbound по имени: `profile.name` должен совпадать с `inbound.tag` в Xray.
+
+> При синхронизации список `settings.clients` у управляемого inbound заменяется данными из реестра. Не подключайте к проекту inbound, которым одновременно управляет другая панель.
+
+## Установка проекта
 
 ```bash
 git clone https://github.com/GeorgeFromGeorgea/vless-control.git
 cd vless-control
+
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e .
+
 cp .env.example .env
 chmod 600 .env
 ```
 
-Set the following in `.env` (never commit it):
+Заполните `.env`:
 
 ```dotenv
-TELEGRAM_BOT_TOKEN=YOUR_SEPARATE_BOTFATHER_TOKEN
+TELEGRAM_BOT_TOKEN=ТОКЕН_ОТ_BOTFATHER
 TELEGRAM_ADMIN_IDS=123456789
 DATABASE_PATH=data/vless-control.sqlite3
 XRAY_CONFIG_PATH=/usr/local/etc/xray/config.json
@@ -44,109 +82,207 @@ XRAY_BINARY=/usr/local/bin/xray
 XRAY_SERVICE=xray
 ```
 
-The app reads environment variables directly; it does not load `.env` itself. Export them before each run or configure the service manager:
+Приложение пока не загружает `.env` автоматически. Перед запуском экспортируйте переменные:
 
 ```bash
-set -a; . ./.env; set +a
+set -a
+. ./.env
+set +a
+```
+
+Файл `.env` нельзя добавлять в GitHub. Токен бота и VLESS-ссылки являются секретами.
+
+## Запуск Telegram-бота
+
+```bash
 .venv/bin/vless-control-bot
 ```
 
-Use a dedicated bot token and trusted numeric Telegram account IDs. The bot refuses startup if token/admin allowlist is absent. It ignores management actions from non-admins and rejects all group-chat control. No systemd unit is supplied yet.
+Откройте бота в личном чате и отправьте `/start`.
 
-## Telegram menu and commands
+Бот откажется запускаться, если не указаны:
 
-Send `/start` to the bot in a private chat:
+- `TELEGRAM_BOT_TOKEN`;
+- хотя бы один числовой ID администратора в `TELEGRAM_ADMIN_IDS`.
 
-- **Пользователи** — list latest users and status (UUIDs hidden).
-- **Новый ключ** — create a registry user and UUID. This alone does not add it to Xray.
-- **Профили** — list active profiles.
-- **Назначить профили** — choose user and profile ID(s); same UUID is assigned across those inbounds.
-- **Выдать ссылки** — show the selected user's links in the admin's private bot chat. Admin must pass them privately to the intended person. Links are credentials.
-- **Отмена** — cancel a guided operation.
+Для production рекомендуется отдельный Telegram-бот, который не используется другим процессом.
 
-Command fallback: `/users`, `/new_user NAME`, `/profiles`, `/assign USER_ID PROFILE_ID[,PROFILE_ID]`, `/links USER_ID`, `/revoke USER_ID`. `/revoke` deactivates the registry identity; actual Xray removal requires the sync step below.
+## Кнопки Telegram-бота
 
-### Create profile records
+После `/start` доступны:
 
-A profile wizard is not implemented yet. Use the Python API after the corresponding listener already exists in Xray:
+- **Пользователи** — список пользователей и их статус. UUID в общем списке не показываются.
+- **Новый ключ** — создание пользователя и индивидуального UUID. Сам Xray при этом не изменяется.
+- **Профили** — список активных профилей.
+- **Назначить профили** — выбор пользователя и одного или нескольких профилей.
+- **Выдать ссылки** — отправка ссылок администратору в личный чат с ботом.
+- **Отмена** — отмена текущего действия.
+
+Ссылки нужно передавать конечному пользователю только в личном чате. Не публикуйте их в группах, логах или README.
+
+## Команды бота
+
+Все команды доступны только разрешённым администраторам:
+
+- `/start` — открыть меню;
+- `/users` — список пользователей;
+- `/new_user ИМЯ` — создать пользователя;
+- `/profiles` — список профилей;
+- `/assign USER_ID PROFILE_ID[,PROFILE_ID]` — назначить профили;
+- `/links USER_ID` — получить VLESS-ссылки;
+- `/revoke USER_ID` — деактивировать пользователя в реестре.
+
+После `/revoke` выполните синхронизацию, чтобы убрать UUID из Xray.
+
+## Создание профиля
+
+Пока профиль нельзя создать кнопкой. Для разработки используйте Python API:
 
 ```python
 from vless_control.registry import Registry
 
 db = Registry("data/vless-control.sqlite3")
+
 profile_id = db.add_profile(
-    name="reality-443",  # must match an existing Xray inbound tag
-    host="vpn.example.net", port=443,
-    security="reality", transport="tcp",
+    name="reality-443",       # должен совпадать с inbound.tag в Xray
+    host="vpn.example.net",
+    port=443,
+    security="reality",
+    transport="tcp",
     sni="www.example.org",
-    public_key="CLIENT_FACING_REALITY_PUBLIC_KEY",
+    public_key="ПУБЛИЧНЫЙ_КЛЮЧ_REALITY",
     short_id="0123456789abcdef",
 )
+
 print(profile_id)
 ```
 
-The profile schema contains client-facing information, not the server private key. Keep private keys, configs, tokens, database files, and generated links out of Git. Do not use placeholder values on a live server.
+Не используйте демонстрационные значения на рабочем сервере. Приватный ключ REALITY, токены и реальные конфигурации не должны попадать в публичный репозиторий.
 
-## Xray sync: dry-run, then reviewed apply
+## Синхронизация с Xray
 
-The sync CLI reads active profiles and assignments from `DATABASE_PATH`. It treats each active profile name as a managed inbound tag. Assigned active UUIDs are included there; inactive users are omitted. An active profile with zero active users is synced with an empty clients list. **That clients list is replaced** on each managed inbound; do not point it at an inbound whose clients are managed elsewhere.
+Команда синхронизации читает:
 
-### Dry-run (default, no server changes)
+- активных пользователей;
+- активные профили;
+- связи пользователей с профилями;
+- путь к существующему Xray-конфигу.
 
-Run on the Xray host with access to its config and the project's database:
+Каждый активный профиль должен соответствовать существующему VLESS-inbound с таким же `tag`.
+
+### 1. Предварительный просмотр
+
+Сначала выполните dry-run:
 
 ```bash
-set -a; . ./.env; set +a
+set -a
+. ./.env
+set +a
+
 .venv/bin/vless-control-sync > /tmp/vless-control-candidate.json
 ```
 
-Inspect the candidate carefully before applying. It can contain existing private configuration, so keep it protected and do not upload/paste it publicly. Default mode does not write Xray config or restart services.
+В этом режиме:
 
-### Apply explicitly
+- Xray-конфиг не изменяется;
+- служба не перезапускается;
+- выводится предполагаемый новый JSON.
 
-Verify all paths, inbound tags, client ownership, permissions, backup/recovery access, and service name. Then:
+Файл может содержать приватные настройки. Не загружайте его на GitHub и не отправляйте в чаты.
+
+### 2. Применение изменений
+
+Перед применением проверьте:
+
+- правильность `XRAY_CONFIG_PATH`;
+- правильность `XRAY_BINARY`;
+- правильность `XRAY_SERVICE`;
+- соответствие имён профилей и Xray `inbound.tag`;
+- что выбранные inbound не управляются другой панелью;
+- наличие независимой резервной копии.
+
+Затем выполните:
 
 ```bash
 .venv/bin/vless-control-sync --apply
 ```
 
-The command refuses to create a missing config. It stages the candidate, validates with the configured Xray binary, creates/verifies a timestamped adjacent backup, atomically replaces the file, validates again, and restarts `XRAY_SERVICE` (default `xray`). On a failure it restores the prior bytes and attempts to restart the service with the restored file. Verify the backup and systemd status/logs after the command. The running process might still be using the old in-memory state if restart fails; investigate before retrying.
+Команда:
 
-Advanced file-only mode:
+1. откажется создавать отсутствующий конфиг с нуля;
+2. подготовит новый вариант;
+3. проверит его через `xray run -test -config`;
+4. создаст и проверит резервную копию;
+5. атомарно заменит конфигурацию;
+6. повторно проверит установленный файл;
+7. перезапустит службу Xray;
+8. при ошибке восстановит предыдущую конфигурацию.
+
+### Применение без перезапуска
 
 ```bash
 .venv/bin/vless-control-sync --apply --no-restart
 ```
 
-This does not reload the running process; use only when intentionally coordinating a later safe reload.
+Используйте этот режим только если вы осознанно выполните reload/restart позже. Запущенный Xray может продолжать работать со старой конфигурацией до перезапуска.
 
-The sync CLI needs OS permission to read/write the Xray config and restart the service. Do not run the full Telegram bot as root merely to grant those privileges; a restricted helper/service policy is a production-hardening task still outstanding. Make an independent backup before first applying on a live host.
+## Резервная копия перед работой
 
-## Tests
+Перед первым применением на сервере сделайте независимый backup:
+
+```bash
+archive="/root/xray-config-$(date +%Y%m%d_%H%M%S).tar.gz"
+sudo tar -czf "$archive" /usr/local/etc/xray/config.json
+sudo tar -tzf "$archive" >/dev/null
+```
+
+Не меняйте рабочий Xray без проверенной копии и понятного способа восстановления.
+
+## Тесты
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
 .venv/bin/python -m compileall -q vless_control tests
 ```
 
-Unit tests use temporary files and mocked Xray/service operations. They do not call Telegram, a real Xray binary, systemd, or a public/mobile network. Passing tests is not production deployment verification.
+Тесты проверяют:
 
-## Security and operational cautions
+- реестр пользователей и профилей;
+- назначение нескольких профилей одному UUID;
+- генерацию VLESS-ссылок;
+- параметры REALITY;
+- уникальность inbound и UUID;
+- dry-run-синхронизацию;
+- сохранение неуправляемых клиентов;
+- backup и rollback;
+- запрет запуска без admin allowlist.
 
-- Public repository: review all tracked files/history; never commit `.env`, `.venv`, databases, server config/private keys, backups, VLESS URIs, or credentials.
-- Treat every `vless://` URI as a password. The bot currently returns links only to the allowlisted admin in the private control chat.
-- Review which Xray inbound tags are managed; only their clients lists are replaced.
-- Validate and test on a disposable VM before production. Confirm an independent backup and rollback path.
-- A server-side port listener check cannot test a user's specific mobile operator/network. Have the user test primary and fallback profiles in their client; no universal carrier guarantee is possible.
+Тесты не подтверждают работу реального Xray, systemd, Telegram или мобильного оператора.
 
-## Roadmap
+## Безопасность
 
-- OS preflight and reversible Xray installer/uninstaller for Ubuntu 22.04/24.04 and Debian 12.
-- Telegram profile create/edit flow with validation and confirmations.
-- Separate ownership marker/reconciliation to avoid overwriting client lists owned by other tools.
-- Restricted privileged helper, durable audit log, revocation confirmation, expiry/quota support.
-- Integration tests on disposable VMs, service unit, monitoring, and recovery guide.
+- Не публикуйте `.env`, токены, UUID, VLESS-ссылки, приватные ключи, SQLite-базы, Xray-конфиги и backup-архивы.
+- VLESS-ссылка — это пароль доступа.
+- Используйте отдельный токен Telegram-бота.
+- Ограничивайте управление числовыми Telegram ID.
+- Не давайте боту работать в групповых чатах.
+- Проверяйте inbound-теги перед синхронизацией.
+- Не запускайте полный Telegram-бот от root без отдельного обоснования.
+- Сначала тестируйте изменения на отдельном сервере.
+- Проверка открытого порта на сервере не доказывает доступность через конкретного мобильного оператора.
 
-## License
+## Дорожная карта
 
-MIT (see `LICENSE`).
+- Установщик Xray для Ubuntu 22.04/24.04 и Debian 12.
+- Проверка ОС, портов и существующих служб.
+- Установка и удаление через backup/rollback.
+- Создание и редактирование профилей через Telegram.
+- Срок действия и лимиты трафика.
+- Отдельный privileged helper вместо запуска бота от root.
+- Аудит действий и подтверждение отзыва ключей.
+- Интеграционные тесты на чистых виртуальных серверах.
+- Мониторинг состояния Xray и профилей.
+
+## Лицензия
+
+MIT, см. файл `LICENSE`.
