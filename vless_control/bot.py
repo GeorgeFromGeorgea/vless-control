@@ -42,7 +42,12 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         context.user_data.pop(key, None)
     for key in ("awaiting_manage_confirm", "awaiting_delete_key", "delete_key_choices", "manage_id", "manage_users"):
         context.user_data.pop(key, None)
-    await update.effective_message.reply_text("Действие отменено.")
+    await update.effective_message.reply_text("Действие отменено.", reply_markup=main_menu_keyboard())
+
+
+def main_menu_keyboard() -> ReplyKeyboardMarkup:
+    keyboard = [["🔑 Получить ключ"], ["👤 Пользователи", "📡 Мониторинг"], ["➕ Новый ключ", "⚙️ Управление ключами"], ["🔑 Профили", "➕ Профиль"], ["🧩 Назначить профили", "🔗 Выдать ссылки"]]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -53,10 +58,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not authorized(update):
         await update.effective_message.reply_text("Доступ запрещён.")
         return
-    keyboard = [["🔑 Получить ключ"], ["👤 Пользователи", "📡 Мониторинг"], ["➕ Новый ключ", "⚙️ Управление ключами"], ["🔑 Профили", "➕ Профиль"], ["🧩 Назначить профили", "🔗 Выдать ссылки"]]
     await update.effective_message.reply_text(
         "Панель управления VLESS. Ссылки — секреты доступа.",
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True),
+        reply_markup=main_menu_keyboard(),
     )
 
 

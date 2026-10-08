@@ -1,7 +1,7 @@
 import unittest
 from urllib.parse import urlparse, parse_qs
 
-from vless_control.bot import admins_from_env, button_router, STATE_KEYS
+from vless_control.bot import admins_from_env, button_router, STATE_KEYS, ReplyKeyboardMarkup
 from vless_control.registry import vless_uri
 from unittest.mock import patch
 from types import SimpleNamespace
@@ -10,8 +10,8 @@ import asyncio
 
 class SecurityAndLinkTests(unittest.TestCase):
     def _reply(self, replies):
-        async def reply(text):
-            replies.append(text)
+        async def reply(text, **kwargs):
+            replies.append((text, kwargs))
         return reply
 
     def test_cancel_text_clears_every_wizard_stage_and_menu_cache(self):
@@ -29,6 +29,9 @@ class SecurityAndLinkTests(unittest.TestCase):
             asyncio.run(button_router(update, context))
         self.assertEqual(data, {})
         self.assertEqual(len(replies), 1)
+        self.assertIsInstance(replies[0][1].get("reply_markup"), ReplyKeyboardMarkup)
+        labels={button.text for row in replies[0][1]["reply_markup"].keyboard for button in row}
+        self.assertIn("🔑 Получить ключ", labels)
 
     def test_cancel_variants_precede_field_validation_and_menu_buttons(self):
         for text in ("Отмена", "❌ Отмена", "Отменить", "👤 Пользователи", "🔑 Профили"):
@@ -40,7 +43,7 @@ class SecurityAndLinkTests(unittest.TestCase):
                 asyncio.run(button_router(update, SimpleNamespace(user_data=data)))
             if text in {"Отмена", "❌ Отмена", "Отменить"}:
                 self.assertEqual(data, {})
-                self.assertEqual(replies, ["Действие отменено."])
+                self.assertEqual(replies[0][0], "Действие отменено.")
             else:
                 self.assertIn("profile_values", data)
 
@@ -58,7 +61,7 @@ class SecurityAndLinkTests(unittest.TestCase):
         with patch.dict("os.environ", {"TELEGRAM_ADMIN_IDS": "123"}):
             asyncio.run(button_router(update, SimpleNamespace(user_data=data)))
         self.assertEqual(data, {})
-        self.assertIn("устарел", replies[0])
+        self.assertIn("устарел", replies[0][0])
 
     def test_reality_uri_has_flow_and_client_params(self):
         record = {
