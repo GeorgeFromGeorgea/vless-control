@@ -142,6 +142,18 @@ class RuntimeTests(unittest.TestCase):
         self.assertIsNone(report[0]["online"])
         self.assertIn("monitor_error",report[0])
 
+    def test_monitor_refuses_non_loopback_api_inbound(self):
+        item=self.service.create("monitor-api-public")
+        config=json.loads(self.path.read_text())
+        config["api"]={"tag":"api","services":["StatsService","HandlerService"]}
+        config["stats"]={}
+        config["inbounds"].append({"tag":"api","listen":"0.0.0.0","port":10085,"protocol":"dokodemo-door"})
+        config["routing"]={"rules":[{"type":"field","inboundTag":["api"],"outboundTag":"api"}]}
+        self.path.write_text(json.dumps(config))
+        report=self.service.monitor()
+        self.assertIsNone(report[0]["online"])
+        self.assertIn("monitor_error",report[0])
+
     def test_missing_host_fail_closed(self):
         with self.assertRaises(ValueError): RuntimeService(self.registry,host="",lock_path=str(Path(self.tmp.name)/'x'))
 if __name__=='__main__': unittest.main()

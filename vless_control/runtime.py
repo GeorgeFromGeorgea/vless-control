@@ -143,32 +143,42 @@ class RuntimeService:
 
     def monitor(self) -> list[dict]:
         users = self.registry.list_users()
-        try:
-            config = json.loads(Path(self.config_path).read_text(encoding="utf-8"))
-            if not config.get("stats"):
-                raise RuntimeError("Xray stats are not enabled")
-            result = subprocess.run(
-                [self.xray_binary, "api", "statsgetallonlineusers", "--server=127.0.0.1:10085"],
-                check=True, capture_output=True, text=True, timeout=5,
-            )
-            online_raw = json.loads(result.stdout or "{}")
-            if isinstance(online_raw, dict):
-                online = {str(k) for k in online_raw}
-            elif isinstance(online_raw, list):
-                online = {str(x.get("email", x)) if isinstance(x, dict) else str(x) for x in online_raw}
-            else:
-                raise ValueError("unexpected Xray online-users response")
-            error = None
-        except Exception as exc:
-            online = set()
-            error = type(exc).__name__
-        return [
-            {"id": u["id"], "label": u["label"], "status": u["status"],
-             "expires_at": u["expires_at"],
-             "online": None if error else f"vless-control-{u['uuid']}" in online,
-             **({"monitor_error": error} if error else {})}
-            for u in users
-        ]
+        with process_lock(self.lock_path):
+            try:
+                config = json.loads(Path(self.config_path).read_text(encoding="utf-8"))
+                api_tag = config.get("api", {}).get("tag")
+                services = set(config.get("api", {}).get("services", []))
+                api_inbound = [i for i in config.get("inbounds", []) if i.get("tag") == api_tag]
+                routed = any(
+                    rule.get("type") == "field" and api_tag in (rule.get("inboundTag") or []) and rule.get("outboundTag") == "api"
+                    for rule in config.get("routing", {}).get("rules", [])
+                )
+                if not config.get("stats") or not {"StatsService", "HandlerService"}.issubset(services):
+                    raise RuntimeError("Xray stats/API services are not enabled")
+                if len(api_inbound) != 1 or api_inbound[0].get("listen", "127.0.0.1") not in {"127.0.0.1", "::1"} or not routed:
+                    raise RuntimeError("Xray API must be routed through a loopback-only inbound")
+                result = subprocess.run(
+                    [self.xray_binary, "api", "statsgetallonlineusers", "--server=127.0.0.1:10085", "--timeout=3"],
+                    check=True, capture_output=True, text=True, timeout=5,
+                )
+                online_raw = json.loads(result.stdout or "{}")
+                if isinstance(online_raw, dict):
+                    online = {str(k) for k in online_raw}
+                elif isinstance(online_raw, list):
+                    online = {str(x.get("email", x)) if isinstance(x, dict) else str(x) for x in online_raw}
+                else:
+                    raise ValueError("unexpected Xray online-users response")
+                error = None
+            except Exception as exc:
+                online = set()
+                error = type(exc).__name__
+            return [
+                {"id": u["id"], "label": u["label"], "status": u["status"],
+                 "expires_at": u["expires_at"],
+                 "online": None if error else f"vless-control-{u['uuid']}" in online,
+                 **({"monitor_error": error} if error else {})}
+                for u in users
+            ]
 
     def transition(self, user_id: int, status: str):
         with process_lock(self.lock_path):
