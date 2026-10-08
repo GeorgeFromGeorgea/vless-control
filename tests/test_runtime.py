@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from types import SimpleNamespace
 from vless_control.registry import Registry
 from vless_control.runtime import RuntimeService
 from vless_control.deploy import XrayConfigDeployer
@@ -134,6 +135,32 @@ class RuntimeTests(unittest.TestCase):
         self.service.restart=lambda: (_ for _ in ()).throw(RuntimeError("restart failed"))
         with self.assertRaises(RuntimeError): self.service.delete_key(item["id"],ws_id)
         self.assertEqual(len(self.registry.list_connections(item["id"])),2)
+
+    def test_monitor_online_user_response_matches_project_email(self):
+        item=self.service.create("monitor-online")
+        config=json.loads(self.path.read_text())
+        config["api"]={"tag":"api","services":["StatsService","HandlerService"]}
+        config["stats"]={}
+        config["inbounds"].append({"tag":"api","listen":"127.0.0.1","port":10085,"protocol":"dokodemo-door"})
+        config["routing"]={"rules":[{"type":"field","inboundTag":["api"],"outboundTag":"api"}]}
+        self.path.write_text(json.dumps(config))
+        email="vless-control-"+item["uuid"]
+        with patch("vless_control.runtime.subprocess.run", return_value=SimpleNamespace(stdout=json.dumps([email]), returncode=0)):
+            report=self.service.monitor()
+        self.assertTrue(report[0]["online"])
+
+    def test_monitor_empty_stats_response_is_authoritative_offline(self):
+        item=self.service.create("monitor-empty")
+        config=json.loads(self.path.read_text())
+        config["api"]={"tag":"api","services":["StatsService","HandlerService"]}
+        config["stats"]={}
+        config["inbounds"].append({"tag":"api","listen":"127.0.0.1","port":10085,"protocol":"dokodemo-door"})
+        config["routing"]={"rules":[{"type":"field","inboundTag":["api"],"outboundTag":"api"}]}
+        self.path.write_text(json.dumps(config))
+        with patch("vless_control.runtime.subprocess.run", return_value=SimpleNamespace(stdout="{}", returncode=0)):
+            report=self.service.monitor()
+        self.assertFalse(report[0]["online"])
+        self.assertNotIn("monitor_error",report[0])
 
     def test_monitor_api_failure_is_not_reported_as_offline(self):
         item=self.service.create("monitor-api-down")

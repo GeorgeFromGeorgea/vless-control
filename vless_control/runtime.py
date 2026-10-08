@@ -168,6 +168,8 @@ class RuntimeService:
                     online = {str(x.get("email", x)) if isinstance(x, dict) else str(x) for x in online_raw}
                 else:
                     raise ValueError("unexpected Xray online-users response")
+                # An empty result is a valid, authoritative "no active sessions"
+                # response once StatsService and the API prerequisites passed.
                 error = None
             except Exception as exc:
                 online = set()
