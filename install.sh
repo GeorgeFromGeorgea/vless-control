@@ -29,6 +29,15 @@ fi
 
 read -rsp 'Telegram bot token: ' TELEGRAM_BOT_TOKEN; printf '\n'
 read -rp 'Telegram admin IDs (comma-separated numeric IDs): ' TELEGRAM_ADMIN_IDS
+cat <<'EOF'
+Публичный адрес VPS — IP или домен, по которому устройства будут подключаться к серверу.
+Его можно посмотреть в панели VPS в поле IPv4 address.
+
+Введите только IP или домен — без https:// и без порта.
+Пример IP: 203.0.113.10
+Пример домена: vpn.example.com
+Примеры являются демонстрационными, не вводите их буквально.
+EOF
 read -rp 'Public server host/IP for client links: ' PUBLIC_SERVER_HOST
 read -rp 'Managed VLESS TCP port [443]: ' XRAY_MANAGED_VLESS_PORT
 XRAY_MANAGED_VLESS_PORT=${XRAY_MANAGED_VLESS_PORT:-443}

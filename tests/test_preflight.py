@@ -13,7 +13,7 @@ class PreflightTests(unittest.TestCase):
             config = Path(tmp) / "config.json"
             config.write_text("{}")
             def fake_run(command, **kwargs):
-                if command[:2] == ["ss", "-H"]:
+                if command[:2] == ["ss", "-H"] or command[:3] == ["ss", "-H", "-ltnup"]:
                     return subprocess.CompletedProcess(command, 0, "LISTEN 0 128 0.0.0.0:443 0.0.0.0:* users:(('xray',pid=1))\n", "")
                 return subprocess.CompletedProcess(command, 0, "inactive", "")
             with patch("vless_control.preflight._read_os_release", return_value=("Ubuntu", "24.04")), \
@@ -24,7 +24,7 @@ class PreflightTests(unittest.TestCase):
                  patch("vless_control.preflight.shutil.disk_usage", return_value=(1, 1, 10 * 1024**3)), \
                  patch("vless_control.preflight.Path.read_text", return_value="MemTotal:       4096000 kB\n"), \
                  patch("vless_control.preflight.subprocess.run", side_effect=fake_run):
-                report = collect(config)
+                report = collect(config, runner=fake_run)
             self.assertTrue(report.supported_os)
             self.assertIn("LISTEN", report.occupied_ports["443"][0])
             self.assertIn("xray", report.services)

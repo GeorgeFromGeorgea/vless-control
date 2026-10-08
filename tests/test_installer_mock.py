@@ -37,7 +37,12 @@ class InstallerMockTests(unittest.TestCase):
             result = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True)
             return result.returncode, result.stderr, {p: (root / p).exists() for p in ("etc/xray/config.json", "usr/local/bin/xray", "etc/systemd/system/xray.service", "etc/systemd/system/vless-control.service", "project/.env")},
 
-    def test_installer_detects_existing_systemd_unit_names(self):
+    def test_public_host_prompt_has_clear_russian_hint(self):
+        text = (Path(__file__).resolve().parents[1] / "install.sh").read_text()
+        self.assertIn("Публичный адрес VPS — IP или домен", text)
+        self.assertIn("без https:// и без порта", text)
+        self.assertIn("Примеры являются демонстрационными", text)
+
         import re
         text = (Path(__file__).resolve().parents[1] / "install.sh").read_text()
         pattern = re.search(r"grep -Eq '([^']+)'", text).group(1)
