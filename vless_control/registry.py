@@ -6,6 +6,8 @@ import uuid
 from pathlib import Path
 from typing import Iterable
 
+from .profile_wizard import validate_profile_fields
+
 
 class Registry:
     def __init__(self, path: str | Path):
@@ -69,6 +71,7 @@ class Registry:
             raise ValueError("invalid port")
         if security not in {"reality", "tls", "none"} or transport not in {"tcp", "ws"}:
             raise ValueError("unsupported security/transport")
+        validate_profile_fields(host, security, transport, sni, public_key, short_id)
         if security == "reality" and (transport != "tcp" or not sni or not public_key or not short_id):
             raise ValueError("REALITY/TCP requires SNI, public key, and short ID")
         with self._connect() as db:

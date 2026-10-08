@@ -27,11 +27,31 @@ def registry() -> Registry:
     return Registry(os.getenv("DATABASE_PATH", "data/vless-control.sqlite3"))
 
 
+CANCEL_TEXTS = {"Отмена", "❌ Отмена", "Отменить"}
+STATE_KEYS = (
+    "awaiting_assign_user", "awaiting_assign_profiles", "awaiting_link_user",
+    "awaiting_new_label", "profile_values", "assign_users", "assign_profiles",
+    "selected_assign_user", "link_users",
+)
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not authorized(update):
+        return
+    for key in STATE_KEYS:
+        context.user_data.pop(key, None)
+    await update.effective_message.reply_text("Действие отменено.")
+
+
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await cancel(update, context)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not authorized(update):
         await update.effective_message.reply_text("Доступ запрещён.")
         return
-    keyboard = [["👤 Пользователи", "➕ Новый ключ"], ["🔑 Профили", "➕ Профиль"], ["🧩 Назначить профили", "🔗 Выдать ссылки"]]
+    keyboard = [["🔑 Получить ключ"], ["👤 Пользователи", "➕ Новый ключ"], ["🔑 Профили", "➕ Профиль"], ["🧩 Назначить профили", "🔗 Выдать ссылки"]]
     await update.effective_message.reply_text(
         "Панель управления VLESS. Ссылки — секреты доступа.",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True),
@@ -107,10 +127,57 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not authorized(update):
         return
     text = (update.effective_message.text or "").strip()
-    if text == "Отмена":
-        for key in ("awaiting_assign_user", "awaiting_assign_profiles", "awaiting_link_user", "awaiting_new_label", "profile_values"):
-            context.user_data.pop(key, None)
-        await update.effective_message.reply_text("Отменено.")
+    # Handle cancel before every wizard guard, field parse, and validation branch.
+    if text in CANCEL_TEXTS:
+        await cancel(update, context)
+        return
+    if text == "🔑 Получить ключ":
+        host = os.getenv("PUBLIC_SERVER_HOST", "").strip()
+        port_raw = os.getenv("XRAY_MANAGED_VLESS_PORT", "")
+        if not host or not port_raw.isdigit() or int(port_raw) != 443:
+            await update.effective_message.reply_text("Требуются PUBLIC_SERVER_HOST и XRAY_MANAGED_VLESS_PORT=443.")
+            return
+        import uuid
+        db = registry()
+        item = None
+        try:
+            from .deploy import XrayConfigDeployer, reconcile_clients
+            import json, subprocess
+            config_path = os.getenv("XRAY_CONFIG_PATH", "/usr/local/etc/xray/config.json")
+            config = json.loads(open(config_path, encoding="utf-8").read())
+            inbounds = [i for i in config.get("inbounds", []) if i.get("protocol") == "vless" and i.get("port") == 443 and i.get("streamSettings", {}).get("security", "none") == "none" and i.get("streamSettings", {}).get("network", "tcp") == "tcp"]
+            if len(inbounds) != 1:
+                raise ValueError("ambiguous inbound")
+            with db._connect() as conn:
+                row = conn.execute("SELECT id FROM profiles WHERE active=1 AND port=443 AND security='none' AND transport='tcp' AND host=? AND sni='' AND public_key='' AND short_id='' AND path='' ORDER BY id LIMIT 1", (host,)).fetchone()
+            profile_id = int(row["id"]) if row else db.add_profile("admin-key-443", host, 443, "none", "tcp")
+            profile = db.list_connections(-1)
+            with db._connect() as conn:
+                conn.execute("INSERT INTO user_profiles(user_id,profile_id) VALUES (NULL,NULL)") if False else None
+            item = db.add_user(f"admin-{update.effective_user.id}-{uuid.uuid4().hex[:8]}")
+            db.assign_profiles(item["id"], [profile_id])
+            assignments = db.xray_assignments()
+            target = inbounds[0]
+            tag = target.get("tag") or "vless-control-443"
+            candidate = reconcile_clients(config, {tag: assignments.get(tag, assignments.get("admin-key-443", []))}, target_port=443)
+            # Registry profile names are mapped to the generated target tag.
+            client = {"id": item["uuid"], "email": f"vless-control-{item['uuid']}"}
+            candidate = reconcile_clients(config, {tag: [client]}, target_port=443)
+            deployer = XrayConfigDeployer(config_path, os.getenv("XRAY_BINARY", "/usr/local/bin/xray"))
+            service = os.getenv("XRAY_SERVICE", "xray")
+            def restart():
+                subprocess.run(["systemctl", "restart", service], check=True, timeout=60)
+                subprocess.run(["systemctl", "is-active", "--quiet", service], check=True, timeout=15)
+                import socket
+                with socket.create_connection(("127.0.0.1", 443), timeout=3):
+                    pass
+            deployer.deploy(candidate, restart=restart)
+            await send_links(update, item["id"])
+        except Exception as exc:
+            if item is not None:
+                try: db.deactivate_user(item["id"])
+                except Exception: pass
+            await update.effective_message.reply_text(f"Ключ не выдан: применение не подтверждено ({type(exc).__name__}).")
         return
     if context.user_data.get("awaiting_assign_user"):
         user_id = text.split(maxsplit=1)[0].lstrip("#")
@@ -158,6 +225,9 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if context.user_data.get("profile_values") is not None:
         values = context.user_data["profile_values"]
         field = next_field(values)
+        if text in {"👤 Пользователи", "➕ Новый ключ", "🧩 Назначить профили", "➕ Профиль", "🔑 Профили", "🔗 Выдать ссылки", "🔑 Получить ключ"}:
+            await update.effective_message.reply_text(f"Выберите или введите значение для поля. {PROMPTS[field]} Нажмите «Отмена» для выхода.")
+            return
         try:
             values = accept_value(values, field, text)
         except ValueError as exc:
@@ -272,6 +342,7 @@ def main() -> None:
     app.add_handler(CommandHandler("assign", assign_command))
     app.add_handler(CommandHandler("links", links_command))
     app.add_handler(CommandHandler("revoke", revoke))
+    app.add_handler(CommandHandler("cancel", cancel_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
     app.run_polling()
 

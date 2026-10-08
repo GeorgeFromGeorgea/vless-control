@@ -13,6 +13,7 @@ vless-control-bot = "vless_control.bot:main"
 vless-control-sync = "vless_control.sync:main"
 vless-control-preflight = "vless_control.preflight_cli:main"
 vless-control-install = "vless_control.installer_cli:main"
+vless-control-bootstrap = "vless_control.bootstrap_cli:main"
 
 [tool.setuptools.packages.find]
 include = ["vless_control*"]

@@ -24,7 +24,8 @@ def main() -> None:
     try:
         original = json.loads(config_path.read_text(encoding="utf-8"))
         assignments = Registry(db_path).xray_assignments()
-        candidate = reconcile_clients(original, assignments)
+        target_port = int(os.getenv("XRAY_MANAGED_VLESS_PORT", "443"))
+        candidate = reconcile_clients(original, assignments, target_port=target_port)
         rendered = json.dumps(candidate, indent=2, ensure_ascii=False) + "\n"
         if not args.apply:
             print(rendered)

@@ -65,8 +65,12 @@ for path in "$XRAY_BINARY" "$XRAY_CONFIG_PATH" "$XRAY_UNIT" /etc/systemd/system/
   [[ -e "$path" ]] && existing=1
 done
 if (( existing )); then
+  if [[ -e "$XRAY_CONFIG_PATH" ]] || systemctl is-active --quiet "$XRAY_SERVICE" 2>/dev/null; then
+    printf 'Обнаружен существующий Xray-конфиг или активная служба. Установка REALITY заменяет весь конфиг и запрещена без отдельной безопасной миграции; --replace-existing не переопределяет этот запрет.\n' >&2
+    exit 1
+  fi
   [[ $REPLACE -eq 1 ]] || { printf 'Обнаружена существующая установка; без --replace-existing замена запрещена.\n' >&2; exit 1; }
-  printf 'Обнаружены существующие файлы. Создать backup и заменить? [y/N]: '
+  printf 'Обнаружены неактивные файлы. Создать backup и заменить? [y/N]: '
   read -r answer
   [[ "$answer" == y || "$answer" == Y ]] || { printf 'Отменено.\n'; exit 1; }
 fi

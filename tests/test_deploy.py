@@ -31,6 +31,16 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(result["outbounds"], config["outbounds"])
         self.assertEqual(config["inbounds"][0]["settings"]["clients"][0]["id"], "old")
 
+    def test_untagged_selected_port_gets_adapter_tag_and_preserves_other_inbounds(self):
+        config = {"inbounds": [
+            {"port": 443, "protocol": "vless", "settings": {"clients": [{"id": "manual", "email": "operator"}]}},
+            {"port": 2053, "protocol": "vless", "tag": "other", "settings": {"clients": []}},
+        ]}
+        result = reconcile_clients(config, {"profile": [{"id": "new", "email": "vless-control-new"}]}, target_port=443)
+        self.assertEqual(result["inbounds"][0]["tag"], "vless-control-443")
+        self.assertEqual([c["id"] for c in result["inbounds"][0]["settings"]["clients"]], ["manual", "new"])
+        self.assertEqual(result["inbounds"][1]["settings"]["clients"], [])
+
     def test_reconcile_rejects_unknown_or_duplicate_clients(self):
         with self.assertRaisesRegex(ValueError, "unknown"):
             reconcile_clients(self.config(), {"missing": []})

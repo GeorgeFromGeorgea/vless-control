@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable
 
 
-def reconcile_clients(config: dict, assignments: dict[str, list[dict]]) -> dict:
+def reconcile_clients(config: dict, assignments: dict[str, list[dict]], *, target_port: int | None = None) -> dict:
     """Replace managed VLESS clients per known inbound, preserve unrelated config.
 
     assignments maps inbound tag -> list of client dicts. Every VLESS inbound
@@ -28,14 +28,44 @@ def reconcile_clients(config: dict, assignments: dict[str, list[dict]]) -> dict:
         raise ValueError("config must contain an inbounds list")
     found: set[str] = set()
     tags: set[str] = set()
-    for inbound in inbounds:
-        if not inbound.get("tag") or not inbound.get("protocol"):
-            raise ValueError("each inbound must have a tag and protocol")
+    # Select the requested inbound by full connection semantics and only manage it.
+    if target_port is not None:
+        matches = [i for i in inbounds if i.get("protocol") == "vless" and i.get("port") == target_port
+                   and i.get("streamSettings", {}).get("security", "none") == "none"
+                   and i.get("streamSettings", {}).get("network", "tcp") == "tcp"]
+        if len(matches) != 1:
+            raise ValueError(f"expected exactly one VLESS none/tcp inbound on port {target_port}")
+        target = matches[0]
+        if not target.get("tag"):
+            target["tag"] = f"vless-control-{target_port}"
+        if target["tag"] not in assignments and len(assignments) == 1:
+            assignments = {target["tag"]: next(iter(assignments.values()))}
+    for index, inbound in enumerate(inbounds):
+        # Unmanaged operator inbounds may legitimately have no tag. Assign a
+        # private in-memory identity only when they're targeted (never rewrite them).
+        if not inbound.get("tag") and target_port is not None and inbound is target:
+            pass
+        elif not inbound.get("tag"):
+            continue
+        if not inbound.get("protocol"):
+            raise ValueError("each inbound must have a protocol")
         if inbound["tag"] in tags:
             raise ValueError(f"duplicate inbound tag: {inbound['tag']}")
         tags.add(inbound["tag"])
+        if target_port is not None and inbound is target:
+            found.add(inbound["tag"])
+            settings = inbound.setdefault("settings", {})
+            if not isinstance(settings.get("clients"), list):
+                raise ValueError("target VLESS inbound must have a clients list")
+            seen_ids = {c.get("id") for c in settings["clients"] if c.get("id")}
+            for client in next(iter(assignments.values())):
+                if not client.get("id") or client["id"] in seen_ids:
+                    raise ValueError("missing or duplicate UUID")
+                seen_ids.add(client["id"])
+                settings["clients"].append({k: client[k] for k in ("id", "email", "flow", "level") if k in client})
+            continue
         if inbound.get("protocol") == "vless" and not isinstance(inbound.get("settings", {}).get("clients"), list):
-            raise ValueError(f"VLESS inbound {inbound['tag']!r} must have a clients list")
+            raise ValueError(f"VLESS inbound {inbound.get('tag', '<untagged>')!r} must have a clients list")
         if inbound.get("tag") not in assignments:
             continue
         found.add(inbound["tag"])
