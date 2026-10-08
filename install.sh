@@ -81,7 +81,9 @@ with zipfile.ZipFile(archive) as z:
   p=Path(info.filename)
   if p.is_absolute() or '..' in p.parts or info.is_dir(): continue
   if p.name=='xray':
-   with z.open(info) as src,(dest/'xray').open('wb') as out: out.write(src.read())
+   target=dest/p.name
+   with z.open(info) as src,target.open('wb') as out: out.write(src.read())
+   target.chmod(0o755)
    break
  else: raise SystemExit('файл xray не найден')
 PY
