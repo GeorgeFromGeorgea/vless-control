@@ -103,6 +103,45 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaises(RuntimeError): self.service.transition(item['id'],'paused')
         self.assertEqual(self.registry.get_user(item['id'])['status'],'active')
         self.assertEqual(json.loads(self.path.read_text()),self.original | {"inbounds":[self.original['inbounds'][0] | {"settings":self.original['inbounds'][0]['settings'] | {"clients":[{"id":"manual","email":"operator"},{"id":item['uuid'],"email":"vless-control-"+item['uuid']}]}}]})
+    def test_delete_user_removes_all_managed_inbound_clients(self):
+        item = self.service.create("delete-all")
+        ws = {"tag":"vless-control-ws-8088","port":10001,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"ws","security":"none","wsSettings":{"path":"/vless-ws"}}}
+        c=json.loads(self.path.read_text()); c["inbounds"].append(ws); self.path.write_text(json.dumps(c))
+        ws_id=self.registry.add_profile("vless-control-ws-8088","vpn.example",8088,"none","ws",path="/vless-ws")
+        self.registry.assign_profiles(item["id"],[ws_id])
+        self.service.delete(item["id"])
+        saved=json.loads(self.path.read_text())
+        self.assertTrue(all(item["uuid"] not in [x.get("id") for x in i.get("settings",{}).get("clients",[])] for i in saved["inbounds"]))
+
+    def test_delete_key_removes_only_selected_profile_and_preserves_other(self):
+        item=self.service.create("delete-one-profile")
+        ws={"tag":"vless-control-ws-8088","port":10001,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"ws","security":"none","wsSettings":{"path":"/vless-ws"}}}
+        config=json.loads(self.path.read_text()); config["inbounds"].append(ws); self.path.write_text(json.dumps(config))
+        ws_id=self.registry.add_profile("vless-control-ws-8088","vpn.example",8088,"none","ws",path="/vless-ws")
+        self.registry.assign_profiles(item["id"],[ws_id])
+        tcp_id=self.registry.list_connections(item["id"])[0]["id"]
+        self.assertTrue(self.service.delete_key(item["id"],ws_id))
+        saved=json.loads(self.path.read_text())
+        self.assertNotIn(item["uuid"],[x.get("id") for x in saved["inbounds"][1]["settings"]["clients"]])
+        self.assertIn(item["uuid"],[x.get("id") for x in saved["inbounds"][0]["settings"]["clients"]])
+
+    def test_delete_key_rolls_back_mapping_when_deploy_fails(self):
+        item=self.service.create("delete-one-fail")
+        ws={"tag":"vless-control-ws-8088","port":10001,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"ws","security":"none","wsSettings":{"path":"/vless-ws"}}}
+        config=json.loads(self.path.read_text()); config["inbounds"].append(ws); self.path.write_text(json.dumps(config))
+        ws_id=self.registry.add_profile("vless-control-ws-8088","vpn.example",8088,"none","ws",path="/vless-ws")
+        self.registry.assign_profiles(item["id"],[ws_id])
+        self.service.restart=lambda: (_ for _ in ()).throw(RuntimeError("restart failed"))
+        with self.assertRaises(RuntimeError): self.service.delete_key(item["id"],ws_id)
+        self.assertEqual(len(self.registry.list_connections(item["id"])),2)
+
+    def test_monitor_api_failure_is_not_reported_as_offline(self):
+        item=self.service.create("monitor-api-down")
+        with patch("vless_control.runtime.subprocess.run", side_effect=FileNotFoundError()):
+            report=self.service.monitor()
+        self.assertIsNone(report[0]["online"])
+        self.assertIn("monitor_error",report[0])
+
     def test_missing_host_fail_closed(self):
         with self.assertRaises(ValueError): RuntimeService(self.registry,host="",lock_path=str(Path(self.tmp.name)/'x'))
 if __name__=='__main__': unittest.main()

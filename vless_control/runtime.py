@@ -56,9 +56,12 @@ class RuntimeService:
             raise ValueError("XRAY_MANAGED_PROFILE_TAG is required")
         clients = self.registry.xray_assignments()
         assignments = {tag: clients[tag]}
-        ws_tag = "vless-control-ws-8088"
-        if any(i.get("tag") == ws_tag for i in config.get("inbounds", [])) and ws_tag in clients:
-            assignments[ws_tag] = clients[ws_tag]
+        # Include every registry profile that maps to a VLESS inbound in the
+        # live config, so deletion/revocation prunes the identity everywhere.
+        inbound_tags = {i.get("tag") for i in config.get("inbounds", []) if i.get("protocol") == "vless"}
+        for profile_tag in clients:
+            if profile_tag in inbound_tags and profile_tag not in assignments:
+                assignments[profile_tag] = clients[profile_tag]
         if override:
             uuid, status = override
             for values in assignments.values():
@@ -110,6 +113,62 @@ class RuntimeService:
                 raise ValueError("managed profile does not exactly match configured host, port, or tag")
             return int(row["id"])
         return self.registry.add_profile(self.target_tag, self.host, self.port, "none", "tcp")
+
+    def delete_key(self, user_id: int, profile_id: int) -> bool:
+        with process_lock(self.lock_path):
+            user = self.registry.get_user(user_id)
+            if not user:
+                return False
+            with self.registry._connect() as db:
+                row = db.execute(
+                    "SELECT p.name FROM user_profiles up JOIN profiles p ON p.id=up.profile_id WHERE up.user_id=? AND up.profile_id=? AND p.active=1",
+                    (user_id, profile_id),
+                ).fetchone()
+            if not row:
+                return False
+            config = json.loads(Path(self.config_path).read_text(encoding="utf-8"))
+            if row["name"] not in {i.get("tag") for i in config.get("inbounds", []) if i.get("protocol") == "vless"}:
+                raise ValueError("refusing to revoke profile key: matching VLESS inbound is not present")
+            with self.registry._connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                db.execute("DELETE FROM user_profiles WHERE user_id=? AND profile_id=?", (user_id, profile_id))
+                db.commit()
+            try:
+                self._apply()
+            except Exception:
+                with self.registry._connect() as db:
+                    db.execute("INSERT OR IGNORE INTO user_profiles(user_id,profile_id) VALUES(?,?)", (user_id, profile_id))
+                raise
+            return True
+
+    def monitor(self) -> list[dict]:
+        users = self.registry.list_users()
+        try:
+            config = json.loads(Path(self.config_path).read_text(encoding="utf-8"))
+            if not config.get("stats"):
+                raise RuntimeError("Xray stats are not enabled")
+            result = subprocess.run(
+                [self.xray_binary, "api", "statsgetallonlineusers", "--server=127.0.0.1:10085"],
+                check=True, capture_output=True, text=True, timeout=5,
+            )
+            online_raw = json.loads(result.stdout or "{}")
+            if isinstance(online_raw, dict):
+                online = {str(k) for k in online_raw}
+            elif isinstance(online_raw, list):
+                online = {str(x.get("email", x)) if isinstance(x, dict) else str(x) for x in online_raw}
+            else:
+                raise ValueError("unexpected Xray online-users response")
+            error = None
+        except Exception as exc:
+            online = set()
+            error = type(exc).__name__
+        return [
+            {"id": u["id"], "label": u["label"], "status": u["status"],
+             "expires_at": u["expires_at"],
+             "online": None if error else f"vless-control-{u['uuid']}" in online,
+             **({"monitor_error": error} if error else {})}
+            for u in users
+        ]
 
     def transition(self, user_id: int, status: str):
         with process_lock(self.lock_path):

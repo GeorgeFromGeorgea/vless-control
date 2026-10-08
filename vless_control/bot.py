@@ -29,9 +29,9 @@ def registry() -> Registry:
 
 CANCEL_TEXTS = {"Отмена", "❌ Отмена", "Отменить"}
 STATE_KEYS = (
-    "awaiting_assign_user", "awaiting_assign_profiles", "awaiting_link_user",
-    "awaiting_new_label", "awaiting_new_duration", "awaiting_manage_user", "awaiting_manage_action", "awaiting_manage_confirm", "profile_values", "assign_users", "assign_profiles",
-    "selected_assign_user", "link_users",
+        "awaiting_assign_user", "awaiting_assign_profiles", "awaiting_link_user",
+    "awaiting_new_label", "awaiting_new_duration", "awaiting_manage_user", "awaiting_manage_action", "awaiting_delete_key", "profile_values", "assign_users", "assign_profiles",
+    "selected_assign_user", "link_users", "delete_key_choices", "manage_users",
 )
 
 
@@ -39,6 +39,8 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not authorized(update):
         return
     for key in STATE_KEYS:
+        context.user_data.pop(key, None)
+    for key in ("awaiting_manage_confirm", "awaiting_delete_key", "delete_key_choices", "manage_id", "manage_users"):
         context.user_data.pop(key, None)
     await update.effective_message.reply_text("Действие отменено.")
 
@@ -51,7 +53,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not authorized(update):
         await update.effective_message.reply_text("Доступ запрещён.")
         return
-    keyboard = [["🔑 Получить ключ"], ["👤 Пользователи", "➕ Новый ключ"], ["⚙️ Управление ключами"], ["🔑 Профили", "➕ Профиль"], ["🧩 Назначить профили", "🔗 Выдать ссылки"]]
+    keyboard = [["🔑 Получить ключ"], ["👤 Пользователи", "📡 Мониторинг"], ["➕ Новый ключ", "⚙️ Управление ключами"], ["🔑 Профили", "➕ Профиль"], ["🧩 Назначить профили", "🔗 Выдать ссылки"]]
     await update.effective_message.reply_text(
         "Панель управления VLESS. Ссылки — секреты доступа.",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True),
@@ -131,35 +133,68 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await cancel(update, context)
         return
     if context.user_data.get("awaiting_manage_confirm"):
-        action, user_id = context.user_data.pop("awaiting_manage_confirm")
+        pending = context.user_data.pop("awaiting_manage_confirm")
         if text != "Подтвердить":
             await update.effective_message.reply_text("Отменено."); return
+        action, user_id = pending[:2]
         try:
             from .runtime import runtime_from_env
             svc = runtime_from_env(registry())
-            if action == "delete": svc.delete(user_id)
-            else: svc.transition(user_id, {"pause":"paused", "resume":"active", "revoke":"revoked"}[action])
-            await update.effective_message.reply_text("Изменение применено в Xray.")
+            if action == "delete":
+                ok = svc.delete(user_id)
+            elif action == "delete_key":
+                ok = svc.delete_key(user_id, pending[2])
+            else:
+                ok = svc.transition(user_id, {"pause":"paused", "resume":"active", "revoke":"revoked"}[action])
+            await update.effective_message.reply_text("Изменение применено в Xray." if ok else "Действие не выполнено: пользователь или профиль уже отсутствует.")
         except Exception as exc:
-            await update.effective_message.reply_text(f"Не применено; состояние сохранено ({type(exc).__name__}).")
+            await update.effective_message.reply_text(f"Не применено; состояние не подтверждено ({type(exc).__name__}).")
         return
     if context.user_data.get("awaiting_manage_user"):
         uid = text.lstrip("#").split()[0]
         if uid not in context.user_data.get("manage_users", {}):
             await update.effective_message.reply_text("Выберите пользователя кнопкой или /cancel."); return
         context.user_data.pop("awaiting_manage_user", None)
-        context.user_data["manage_id"] = int(uid); context.user_data["awaiting_manage_action"] = True
-        await update.effective_message.reply_text("Выберите действие: pause / resume / revoke / delete")
+        context.user_data["manage_id"] = int(uid)
+        context.user_data["awaiting_manage_action"] = True
+        row = registry().get_user(int(uid))
+        state = row["status"] if row else "не найден"
+        state_choices = {"active": [["⏸ Отключить пользователя"]], "paused": [["▶️ Включить пользователя"]],
+                         "revoked": [["▶️ Включить пользователя"]], "не найден": []}
+        choices = state_choices.get(state, []) + [["🚫 Отозвать все ключи"], ["🗝 Удалить профильный ключ"], ["🗑 Удалить пользователя"], ["❌ Отмена"]]
+        await update.effective_message.reply_text(f"Пользователь #{uid}; состояние: {state}. Выберите действие:", reply_markup=ReplyKeyboardMarkup(choices, resize_keyboard=True, one_time_keyboard=True))
         return
     if context.user_data.get("awaiting_manage_action"):
-        action = text.lower()
-        if action not in {"pause", "resume", "revoke", "delete"}:
-            await update.effective_message.reply_text("Действие: pause, resume, revoke или delete."); return
+        choices = {"pause": "pause", "resume": "resume", "revoke": "revoke", "delete": "delete",
+                   "⏸ Отключить пользователя": "pause", "▶️ Включить пользователя": "resume",
+                   "🚫 Отозвать все ключи": "revoke", "🗑 Удалить пользователя": "delete",
+                   "🗝 Удалить профильный ключ": "delete_key"}
+        action = choices.get(text.lower(), choices.get(text))
+        if not action:
+            await update.effective_message.reply_text("Выберите действие кнопкой или /cancel."); return
         uid = context.user_data.pop("manage_id"); context.user_data.pop("awaiting_manage_action", None)
+        if action == "delete_key":
+            user = registry().get_user(uid)
+            with registry()._connect() as db:
+                rows = db.execute("SELECT p.id,p.name,p.port FROM user_profiles up JOIN profiles p ON p.id=up.profile_id WHERE up.user_id=? AND p.active=1 ORDER BY p.id", (uid,)).fetchall()
+            if not rows:
+                await update.effective_message.reply_text("У пользователя нет назначенных профильных ключей."); return
+            context.user_data["awaiting_delete_key"] = uid
+            context.user_data["delete_key_choices"] = {str(r["id"]): r["name"] for r in rows}
+            await update.effective_message.reply_text("Выберите профильный ключ для отзыва:", reply_markup=ReplyKeyboardMarkup([[f"#{r['id']} {r['name']} :{r['port']}"] for r in rows] + [["❌ Отмена"]], resize_keyboard=True))
+            return
         context.user_data["awaiting_manage_confirm"] = (action, uid)
-        await update.effective_message.reply_text(f"Подтвердите {action} пользователя #{uid}: отправьте «Подтвердить» или /cancel")
+        await update.effective_message.reply_text(f"⚠️ Подтвердите действие {action} для пользователя #{uid}. Для отмены /cancel.", reply_markup=ReplyKeyboardMarkup([["Подтвердить"], ["❌ Отмена"]], resize_keyboard=True, one_time_keyboard=True))
         return
-    if context.user_data.get("awaiting_new_duration"):
+    if context.user_data.get("awaiting_delete_key"):
+        uid = context.user_data.pop("awaiting_delete_key")
+        key_id = text.lstrip("#").split()[0]
+        if key_id not in context.user_data.pop("delete_key_choices", {}):
+            await update.effective_message.reply_text("Выберите профиль кнопкой или /cancel."); return
+        context.user_data["awaiting_manage_confirm"] = ("delete_key", uid, int(key_id))
+        await update.effective_message.reply_text(f"⚠️ Отозвать профиль #{key_id} у пользователя #{uid}? Подтвердите или /cancel.", reply_markup=ReplyKeyboardMarkup([["Подтвердить"], ["❌ Отмена"]], resize_keyboard=True, one_time_keyboard=True))
+        return
+    if "awaiting_new_duration" in context.user_data:
         if context.user_data["awaiting_new_duration"] != "new-key-duration":
             context.user_data.pop("new_label", None)
             context.user_data.pop("awaiting_new_duration", None)
@@ -259,11 +294,28 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     if text == "👤 Пользователи":
         await users(update, context)
+    elif text == "📡 Мониторинг":
+        try:
+            from .runtime import runtime_from_env
+            report = runtime_from_env(registry()).monitor()
+            lines = []
+            for row in report:
+                state = "🟢 онлайн" if row.get("online") is True else "⚪ не в сети" if row.get("online") is False else "⚠️ статус неизвестен"
+                lines.append(f"#{row['id']} {row['label']} — {state} — {row['status']}")
+            text_out = "\n".join(lines) or "Пользователей нет."
+            if report and report[0].get("monitor_error"):
+                text_out += "\nОшибка опроса Xray API; онлайн-статус не определён."
+            await update.effective_message.reply_text(text_out[:4000])
+        except Exception as exc:
+            await update.effective_message.reply_text(f"Мониторинг недоступен ({type(exc).__name__}); статус подключений неизвестен.")
     elif text == "⚙️ Управление ключами":
         rows = registry().list_users()
         context.user_data["manage_users"] = {str(r["id"]): r["label"] for r in rows}
         context.user_data["awaiting_manage_user"] = True
-        await update.effective_message.reply_text("Выберите пользователя:", reply_markup=ReplyKeyboardMarkup([[f"#{r['id']} {r['label']}"] for r in rows] + [["Отмена"]], resize_keyboard=True))
+        await update.effective_message.reply_text("Выберите пользователя:", reply_markup=ReplyKeyboardMarkup(
+            [[f"#{r['id']} {r['label']}"] for r in rows] + [["❌ Отмена"]], resize_keyboard=True))
+        context.user_data["manage_actions"] = True
+        return
     elif text == "➕ Новый ключ":
         context.user_data.pop("profile_values", None)
         context.user_data.pop("new_label", None)
