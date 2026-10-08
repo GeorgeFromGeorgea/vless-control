@@ -103,7 +103,7 @@ class RuntimeTests(unittest.TestCase):
         self.service.restart=lambda: (_ for _ in ()).throw(RuntimeError('restart failed'))
         with self.assertRaises(RuntimeError): self.service.transition(item['id'],'paused')
         self.assertEqual(self.registry.get_user(item['id'])['status'],'active')
-        self.assertEqual(json.loads(self.path.read_text()),self.original | {"inbounds":[self.original['inbounds'][0] | {"settings":self.original['inbounds'][0]['settings'] | {"clients":[{"id":"manual","email":"operator"},{"id":item['uuid'],"email":"vless-control-"+item['uuid']}]}}]})
+        self.assertEqual(json.loads(self.path.read_text()),self.original | {"inbounds":[self.original['inbounds'][0] | {"settings":self.original['inbounds'][0]['settings'] | {"clients":[{"id":"manual","email":"operator"},{"id":item['uuid'],"email":"vless-control-"+item['uuid'],"level":0}]}}]})
     def test_delete_user_removes_all_managed_inbound_clients(self):
         item = self.service.create("delete-all")
         ws = {"tag":"vless-control-ws-8088","port":10001,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"ws","security":"none","wsSettings":{"path":"/vless-ws"}}}
@@ -149,6 +149,18 @@ class RuntimeTests(unittest.TestCase):
             report=self.service.monitor()
         self.assertTrue(report[0]["online"])
 
+    def test_monitor_xray_users_envelope_matches_project_email(self):
+        item=self.service.create("monitor-users-envelope")
+        config=json.loads(self.path.read_text())
+        config["api"]={"tag":"api","services":["StatsService","HandlerService"]}
+        config["stats"]={}
+        config["inbounds"].append({"tag":"api","listen":"127.0.0.1","port":10085,"protocol":"dokodemo-door"})
+        config["routing"]={"rules":[{"type":"field","inboundTag":["api"],"outboundTag":"api"}]}
+        self.path.write_text(json.dumps(config))
+        envelope={"users":["user>>>vless-control-"+item["uuid"]+">>>online"]}
+        with patch("vless_control.runtime.subprocess.run", return_value=SimpleNamespace(stdout=json.dumps(envelope), returncode=0)):
+            report=self.service.monitor()
+        self.assertTrue(report[0]["online"])
     def test_monitor_empty_stats_response_is_unknown_until_probe(self):
         item=self.service.create("monitor-empty")
         config=json.loads(self.path.read_text())

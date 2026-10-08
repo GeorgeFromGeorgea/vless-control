@@ -125,7 +125,7 @@ class Registry:
             now=iso(self.clock())
             ps=db.execute("SELECT name FROM profiles WHERE active=1 ORDER BY name").fetchall(); rows=db.execute("SELECT p.name AS inbound_tag,u.client_uuid FROM users u JOIN user_profiles up ON up.user_id=u.id JOIN profiles p ON p.id=up.profile_id WHERE u.status='active' AND (u.expires_at IS NULL OR u.expires_at>?) AND p.active=1 ORDER BY p.name,u.id",(now,)).fetchall()
         out={r['name']:[] for r in ps}
-        for r in rows: out[r['inbound_tag']].append({'id':r['client_uuid'],'email':f"vless-control-{r['client_uuid']}"})
+        for r in rows: out[r['inbound_tag']].append({'id':r['client_uuid'],'email':f"vless-control-{r['client_uuid']}",'level':0})
         return out
     def deactivate_user(self,user_id):
         user=self.get_user(user_id)

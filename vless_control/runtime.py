@@ -71,7 +71,7 @@ class RuntimeService:
                     rows = db.execute("SELECT p.name FROM user_profiles up JOIN profiles p ON p.id=up.profile_id WHERE up.user_id=(SELECT id FROM users WHERE client_uuid=?) AND p.active=1", (uuid,)).fetchall()
                 for row in rows:
                     if row["name"] in assignments:
-                        assignments[row["name"]].append({"id":uuid,"email":f"vless-control-{uuid}"})
+                        assignments[row["name"]].append({"id":uuid,"email":f"vless-control-{uuid}","level":0})
         candidate = reconcile_clients(config, assignments, target_port=self.port)
         # For a selected port, prune only explicitly manager-marked clients even
         # if they are stale/orphaned in the runtime registry.
@@ -162,7 +162,9 @@ class RuntimeService:
                     check=True, capture_output=True, text=True, timeout=5,
                 )
                 online_raw = json.loads(result.stdout or "{}")
-                if isinstance(online_raw, dict):
+                if isinstance(online_raw, dict) and isinstance(online_raw.get("users"), list):
+                    online = {str(x).split(">>>")[1] if str(x).startswith("user>>>") and ">>>" in str(x) else str(x) for x in online_raw["users"]}
+                elif isinstance(online_raw, dict):
                     online = {str(k) for k in online_raw}
                 elif isinstance(online_raw, list):
                     online = {str(x.get("email", x)) if isinstance(x, dict) else str(x) for x in online_raw}
