@@ -22,6 +22,26 @@ class RuntimeTests(unittest.TestCase):
         saved=json.loads(self.path.read_text()); clients=saved['inbounds'][0]['settings']['clients']
         self.assertEqual([c['id'] for c in clients],['manual',item['uuid']])
         self.assertEqual(item['expires_at'] is not None,True)
+        with self.registry._connect() as db:
+            profile=db.execute("SELECT * FROM profiles").fetchone()
+        self.assertEqual((profile['name'],profile['host'],profile['port']),('selected','vpn.example',9443))
+    def test_existing_managed_profile_mismatch_fails_closed(self):
+        self.registry.add_profile('selected','wrong.example',1,'none','tcp')
+        with self.assertRaisesRegex(ValueError,'does not exactly match'):
+            self.service.create('must-not-create')
+        self.assertEqual(self.registry.list_users(), [])
+    def test_managed_port_must_match_environment(self):
+        with patch.dict('os.environ', {'XRAY_MANAGED_VLESS_PORT':'443'}):
+            with self.assertRaisesRegex(ValueError,'does not match'):
+                RuntimeService(self.registry,host='vpn.example',port=1,target_tag='selected')
+    def test_profile_uses_configured_443_host_and_tag_for_one_day_key(self):
+        self.path.write_text(json.dumps({"inbounds":[{"tag":"managed","port":443,"protocol":"vless","streamSettings":{"security":"none","network":"tcp"},"settings":{"clients":[],"decryption":"none"}}],"outbounds":[{"protocol":"freedom"}]}))
+        self.service=RuntimeService(self.registry,host='vpn.example',port=443,config_path=str(self.path),lock_path=str(Path(self.tmp.name)/'lock443'),restart=lambda:None,target_tag='managed')
+        item=self.service.create('duration-check',1)
+        self.assertTrue(item['expires_at'])
+        with self.registry._connect() as db:
+            profile=db.execute('SELECT name,host,port FROM profiles').fetchone()
+        self.assertEqual(tuple(profile),('managed','vpn.example',443))
     def test_failure_rolls_back_and_created_record_revoked(self):
         self.service.restart=lambda: (_ for _ in ()).throw(RuntimeError('restart failed'))
         with self.assertRaises(RuntimeError): self.service.create("failed")

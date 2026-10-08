@@ -160,6 +160,11 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.effective_message.reply_text(f"Подтвердите {action} пользователя #{uid}: отправьте «Подтвердить» или /cancel")
         return
     if context.user_data.get("awaiting_new_duration"):
+        if context.user_data["awaiting_new_duration"] != "new-key-duration":
+            context.user_data.pop("new_label", None)
+            context.user_data.pop("awaiting_new_duration", None)
+            await update.effective_message.reply_text("Срок устарел; начните выдачу ключа заново.")
+            return
         days = {"1 день":1,"7 дней":7,"30 дней":30,"Бессрочно":None}.get(text)
         if text not in {"1 день","7 дней","30 дней","Бессрочно"}:
             await update.effective_message.reply_text("Выберите срок кнопкой или /cancel."); return
@@ -173,6 +178,10 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await update.effective_message.reply_text(f"Ключ не выдан: применение не подтверждено ({type(exc).__name__}).")
         return
     if text == "🔑 Получить ключ":
+        context.user_data.pop("profile_values", None)
+        context.user_data.pop("awaiting_new_label", None)
+        context.user_data.pop("new_label", None)
+        context.user_data.pop("awaiting_new_duration", None)
         context.user_data["awaiting_new_label"] = True
         await update.effective_message.reply_text("Введите метку нового пользователя (1–80 символов), либо нажмите «Отмена».")
         return
@@ -251,13 +260,16 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         context.user_data["awaiting_manage_user"] = True
         await update.effective_message.reply_text("Выберите пользователя:", reply_markup=ReplyKeyboardMarkup([[f"#{r['id']} {r['label']}"] for r in rows] + [["Отмена"]], resize_keyboard=True))
     elif text == "➕ Новый ключ":
+        context.user_data.pop("profile_values", None)
+        context.user_data.pop("new_label", None)
+        context.user_data.pop("awaiting_new_duration", None)
         context.user_data["awaiting_new_label"] = True
         await update.effective_message.reply_text("Введите метку нового пользователя (1–80 символов), либо нажмите «Отмена».")
         return
     elif context.user_data.get("awaiting_new_label"):
         context.user_data.pop("awaiting_new_label", None)
         context.user_data["new_label"] = text
-        context.user_data["awaiting_new_duration"] = True
+        context.user_data["awaiting_new_duration"] = "new-key-duration"
         await update.effective_message.reply_text("Выберите срок:", reply_markup=ReplyKeyboardMarkup([["1 день", "7 дней"], ["30 дней", "Бессрочно"], ["Отмена"]], resize_keyboard=True, one_time_keyboard=True))
     elif text == "➕ Профиль":
         context.user_data["profile_values"] = {}

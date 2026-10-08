@@ -50,6 +50,16 @@ class SecurityAndLinkTests(unittest.TestCase):
         with patch.dict("os.environ", {"TELEGRAM_ADMIN_IDS": ""}, clear=False):
             self.assertEqual(admins_from_env(), set())
 
+    def test_duration_button_cannot_use_legacy_boolean_state(self):
+        data = {"awaiting_new_duration": True, "new_label": "1"}
+        replies = []
+        message = SimpleNamespace(text="1 день", reply_text=self._reply(replies))
+        update = SimpleNamespace(effective_user=SimpleNamespace(id=123), effective_chat=SimpleNamespace(type="private"), effective_message=message)
+        with patch.dict("os.environ", {"TELEGRAM_ADMIN_IDS": "123"}):
+            asyncio.run(button_router(update, SimpleNamespace(user_data=data)))
+        self.assertEqual(data, {})
+        self.assertIn("устарел", replies[0])
+
     def test_reality_uri_has_flow_and_client_params(self):
         record = {
             "label": "User", "name": "Primary", "client_uuid": "00000000-0000-4000-8000-000000000001",

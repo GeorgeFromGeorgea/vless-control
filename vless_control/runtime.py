@@ -27,6 +27,10 @@ class RuntimeService:
                  target_tag: str | None = None):
         if not host.strip() or not 1 <= int(port) <= 65535:
             raise ValueError("PUBLIC_SERVER_HOST and a valid managed port are required")
+        import os
+        configured_port = os.getenv("XRAY_MANAGED_VLESS_PORT", "").strip()
+        if configured_port and (not configured_port.isdigit() or int(configured_port) != int(port)):
+            raise ValueError("managed port does not match XRAY_MANAGED_VLESS_PORT")
         self.registry, self.host, self.port = registry, host.strip(), int(port)
         self.config_path, self.xray_binary, self.service = config_path, xray_binary, service
         self.lock_path, self.restart, self.target_tag = lock_path, restart, target_tag
@@ -82,8 +86,15 @@ class RuntimeService:
 
     def _profile(self):
         with self.registry._connect() as db:
-            row = db.execute("SELECT id FROM profiles WHERE active=1 AND name=? AND host=? AND port=? AND security='none' AND transport='tcp' AND sni='' AND public_key='' AND short_id='' AND path='' ORDER BY id LIMIT 1", (self.target_tag, self.host, self.port)).fetchone()
-        return int(row["id"]) if row else self.registry.add_profile(self.target_tag, self.host, self.port, "none", "tcp")
+            row = db.execute("SELECT * FROM profiles WHERE active=1 AND name=?", (self.target_tag,)).fetchone()
+        if row:
+            expected = {"name": self.target_tag, "host": self.host, "port": self.port,
+                        "security": "none", "transport": "tcp", "sni": "",
+                        "public_key": "", "short_id": "", "path": ""}
+            if any(row[key] != value for key, value in expected.items()):
+                raise ValueError("managed profile does not exactly match configured host, port, or tag")
+            return int(row["id"])
+        return self.registry.add_profile(self.target_tag, self.host, self.port, "none", "tcp")
 
     def transition(self, user_id: int, status: str):
         with process_lock(self.lock_path):
