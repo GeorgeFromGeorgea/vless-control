@@ -36,10 +36,19 @@ class DeployTests(unittest.TestCase):
             {"port": 443, "protocol": "vless", "settings": {"clients": [{"id": "manual", "email": "operator"}]}},
             {"port": 2053, "protocol": "vless", "tag": "other", "settings": {"clients": []}},
         ]}
-        result = reconcile_clients(config, {"profile": [{"id": "new", "email": "vless-control-new"}]}, target_port=443)
+        config["inbounds"][0]["tag"] = "vless-control-443"
+        result = reconcile_clients(config, {"vless-control-443": [{"id": "new", "email": "vless-control-new"}]}, target_port=443)
         self.assertEqual(result["inbounds"][0]["tag"], "vless-control-443")
         self.assertEqual([c["id"] for c in result["inbounds"][0]["settings"]["clients"]], ["manual", "new"])
         self.assertEqual(result["inbounds"][1]["settings"]["clients"], [])
+
+    def test_selected_inbound_fails_closed_without_exact_mapping(self):
+        config = {"inbounds": [{"tag": "managed", "port": 443, "protocol": "vless", "settings": {"clients": []}}]}
+        with self.assertRaisesRegex(ValueError, "explicit assignment"):
+            reconcile_clients(config, {"other": []}, target_port=443)
+        config["inbounds"].append(config["inbounds"][0] | {"tag": "duplicate"})
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            reconcile_clients(config, {"managed": []}, target_port=443)
 
     def test_reconcile_rejects_unknown_or_duplicate_clients(self):
         with self.assertRaisesRegex(ValueError, "unknown"):

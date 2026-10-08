@@ -38,8 +38,8 @@ def reconcile_clients(config: dict, assignments: dict[str, list[dict]], *, targe
         target = matches[0]
         if not target.get("tag"):
             target["tag"] = f"vless-control-{target_port}"
-        if target["tag"] not in assignments and len(assignments) == 1:
-            assignments = {target["tag"]: next(iter(assignments.values()))}
+        if target["tag"] not in assignments:
+            raise ValueError(f"no explicit assignment for selected inbound tag {target['tag']!r}")
     for index, inbound in enumerate(inbounds):
         # Unmanaged operator inbounds may legitimately have no tag. Assign a
         # private in-memory identity only when they're targeted (never rewrite them).
@@ -57,12 +57,14 @@ def reconcile_clients(config: dict, assignments: dict[str, list[dict]], *, targe
             settings = inbound.setdefault("settings", {})
             if not isinstance(settings.get("clients"), list):
                 raise ValueError("target VLESS inbound must have a clients list")
-            seen_ids = {c.get("id") for c in settings["clients"] if c.get("id")}
-            for client in next(iter(assignments.values())):
+            sanitized = [c for c in settings["clients"] if not str(c.get("email", "")).startswith("vless-control-")]
+            seen_ids = {c.get("id") for c in sanitized if c.get("id")}
+            for client in assignments[target["tag"]]:
                 if not client.get("id") or client["id"] in seen_ids:
                     raise ValueError("missing or duplicate UUID")
                 seen_ids.add(client["id"])
-                settings["clients"].append({k: client[k] for k in ("id", "email", "flow", "level") if k in client})
+                sanitized.append({k: client[k] for k in ("id", "email", "flow", "level") if k in client})
+            settings["clients"] = sanitized
             continue
         if inbound.get("protocol") == "vless" and not isinstance(inbound.get("settings", {}).get("clients"), list):
             raise ValueError(f"VLESS inbound {inbound.get('tag', '<untagged>')!r} must have a clients list")
@@ -153,7 +155,7 @@ class XrayConfigDeployer:
         if not self.path.is_file():
             raise FileNotFoundError(f"Existing config required; refusing to create from scratch: {self.path}")
         candidate = self.stage_and_validate(config)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         backup = self.path.with_name(f"{self.path.name}.bak.{stamp}")
         old = self.path.read_bytes()
         mode = self.path.stat().st_mode & 0o777

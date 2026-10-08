@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "vless-control"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["python-telegram-bot==22.5"]
+dependencies = ["python-telegram-bot[job-queue]==22.5"]
 
 [project.scripts]
 vless-control-bot = "vless_control.bot:main"

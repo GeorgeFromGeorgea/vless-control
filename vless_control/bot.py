@@ -30,7 +30,7 @@ def registry() -> Registry:
 CANCEL_TEXTS = {"Отмена", "❌ Отмена", "Отменить"}
 STATE_KEYS = (
     "awaiting_assign_user", "awaiting_assign_profiles", "awaiting_link_user",
-    "awaiting_new_label", "profile_values", "assign_users", "assign_profiles",
+    "awaiting_new_label", "awaiting_new_duration", "awaiting_manage_user", "awaiting_manage_action", "awaiting_manage_confirm", "profile_values", "assign_users", "assign_profiles",
     "selected_assign_user", "link_users",
 )
 
@@ -51,7 +51,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not authorized(update):
         await update.effective_message.reply_text("Доступ запрещён.")
         return
-    keyboard = [["🔑 Получить ключ"], ["👤 Пользователи", "➕ Новый ключ"], ["🔑 Профили", "➕ Профиль"], ["🧩 Назначить профили", "🔗 Выдать ссылки"]]
+    keyboard = [["🔑 Получить ключ"], ["👤 Пользователи", "➕ Новый ключ"], ["⚙️ Управление ключами"], ["🔑 Профили", "➕ Профиль"], ["🧩 Назначить профили", "🔗 Выдать ссылки"]]
     await update.effective_message.reply_text(
         "Панель управления VLESS. Ссылки — секреты доступа.",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True),
@@ -63,9 +63,8 @@ async def users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     db = registry()
     # Show safe metadata only; never list UUIDs in a general user list.
-    with db._connect() as conn:
-        rows = conn.execute("SELECT id,label,active FROM users ORDER BY id DESC LIMIT 50").fetchall()
-    text = "\n".join(f"#{r['id']} {r['label']} — {'активен' if r['active'] else 'отключён'}" for r in rows) or "Пользователей пока нет."
+    rows = db.list_users()
+    text = "\n".join(f"#{r['id']} {r['label']} — {r['status']} — до {r['expires_at'] or 'бессрочно'}" for r in rows[:50]) or "Пользователей пока нет."
     await update.effective_message.reply_text(text)
 
 
@@ -131,53 +130,51 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if text in CANCEL_TEXTS:
         await cancel(update, context)
         return
-    if text == "🔑 Получить ключ":
-        host = os.getenv("PUBLIC_SERVER_HOST", "").strip()
-        port_raw = os.getenv("XRAY_MANAGED_VLESS_PORT", "")
-        if not host or not port_raw.isdigit() or int(port_raw) != 443:
-            await update.effective_message.reply_text("Требуются PUBLIC_SERVER_HOST и XRAY_MANAGED_VLESS_PORT=443.")
-            return
-        import uuid
-        db = registry()
-        item = None
+    if context.user_data.get("awaiting_manage_confirm"):
+        action, user_id = context.user_data.pop("awaiting_manage_confirm")
+        if text != "Подтвердить":
+            await update.effective_message.reply_text("Отменено."); return
         try:
-            from .deploy import XrayConfigDeployer, reconcile_clients
-            import json, subprocess
-            config_path = os.getenv("XRAY_CONFIG_PATH", "/usr/local/etc/xray/config.json")
-            config = json.loads(open(config_path, encoding="utf-8").read())
-            inbounds = [i for i in config.get("inbounds", []) if i.get("protocol") == "vless" and i.get("port") == 443 and i.get("streamSettings", {}).get("security", "none") == "none" and i.get("streamSettings", {}).get("network", "tcp") == "tcp"]
-            if len(inbounds) != 1:
-                raise ValueError("ambiguous inbound")
-            with db._connect() as conn:
-                row = conn.execute("SELECT id FROM profiles WHERE active=1 AND port=443 AND security='none' AND transport='tcp' AND host=? AND sni='' AND public_key='' AND short_id='' AND path='' ORDER BY id LIMIT 1", (host,)).fetchone()
-            profile_id = int(row["id"]) if row else db.add_profile("admin-key-443", host, 443, "none", "tcp")
-            profile = db.list_connections(-1)
-            with db._connect() as conn:
-                conn.execute("INSERT INTO user_profiles(user_id,profile_id) VALUES (NULL,NULL)") if False else None
-            item = db.add_user(f"admin-{update.effective_user.id}-{uuid.uuid4().hex[:8]}")
-            db.assign_profiles(item["id"], [profile_id])
-            assignments = db.xray_assignments()
-            target = inbounds[0]
-            tag = target.get("tag") or "vless-control-443"
-            candidate = reconcile_clients(config, {tag: assignments.get(tag, assignments.get("admin-key-443", []))}, target_port=443)
-            # Registry profile names are mapped to the generated target tag.
-            client = {"id": item["uuid"], "email": f"vless-control-{item['uuid']}"}
-            candidate = reconcile_clients(config, {tag: [client]}, target_port=443)
-            deployer = XrayConfigDeployer(config_path, os.getenv("XRAY_BINARY", "/usr/local/bin/xray"))
-            service = os.getenv("XRAY_SERVICE", "xray")
-            def restart():
-                subprocess.run(["systemctl", "restart", service], check=True, timeout=60)
-                subprocess.run(["systemctl", "is-active", "--quiet", service], check=True, timeout=15)
-                import socket
-                with socket.create_connection(("127.0.0.1", 443), timeout=3):
-                    pass
-            deployer.deploy(candidate, restart=restart)
+            from .runtime import runtime_from_env
+            svc = runtime_from_env(registry())
+            if action == "delete": svc.delete(user_id)
+            else: svc.transition(user_id, {"pause":"paused", "resume":"active", "revoke":"revoked"}[action])
+            await update.effective_message.reply_text("Изменение применено в Xray.")
+        except Exception as exc:
+            await update.effective_message.reply_text(f"Не применено; состояние сохранено ({type(exc).__name__}).")
+        return
+    if context.user_data.get("awaiting_manage_user"):
+        uid = text.lstrip("#").split()[0]
+        if uid not in context.user_data.get("manage_users", {}):
+            await update.effective_message.reply_text("Выберите пользователя кнопкой или /cancel."); return
+        context.user_data.pop("awaiting_manage_user", None)
+        context.user_data["manage_id"] = int(uid); context.user_data["awaiting_manage_action"] = True
+        await update.effective_message.reply_text("Выберите действие: pause / resume / revoke / delete")
+        return
+    if context.user_data.get("awaiting_manage_action"):
+        action = text.lower()
+        if action not in {"pause", "resume", "revoke", "delete"}:
+            await update.effective_message.reply_text("Действие: pause, resume, revoke или delete."); return
+        uid = context.user_data.pop("manage_id"); context.user_data.pop("awaiting_manage_action", None)
+        context.user_data["awaiting_manage_confirm"] = (action, uid)
+        await update.effective_message.reply_text(f"Подтвердите {action} пользователя #{uid}: отправьте «Подтвердить» или /cancel")
+        return
+    if context.user_data.get("awaiting_new_duration"):
+        days = {"1 день":1,"7 дней":7,"30 дней":30,"Бессрочно":None}.get(text)
+        if text not in {"1 день","7 дней","30 дней","Бессрочно"}:
+            await update.effective_message.reply_text("Выберите срок кнопкой или /cancel."); return
+        label = context.user_data.pop("new_label"); context.user_data.pop("awaiting_new_duration", None)
+        try:
+            from .runtime import runtime_from_env
+            item = runtime_from_env(registry()).create(label, days)
+            await update.effective_message.reply_text("Ключ применён в Xray. Ссылка:")
             await send_links(update, item["id"])
         except Exception as exc:
-            if item is not None:
-                try: db.deactivate_user(item["id"])
-                except Exception: pass
             await update.effective_message.reply_text(f"Ключ не выдан: применение не подтверждено ({type(exc).__name__}).")
+        return
+    if text == "🔑 Получить ключ":
+        context.user_data["awaiting_new_label"] = True
+        await update.effective_message.reply_text("Введите метку нового пользователя (1–80 символов), либо нажмите «Отмена».")
         return
     if context.user_data.get("awaiting_assign_user"):
         user_id = text.split(maxsplit=1)[0].lstrip("#")
@@ -248,16 +245,20 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     if text == "👤 Пользователи":
         await users(update, context)
+    elif text == "⚙️ Управление ключами":
+        rows = registry().list_users()
+        context.user_data["manage_users"] = {str(r["id"]): r["label"] for r in rows}
+        context.user_data["awaiting_manage_user"] = True
+        await update.effective_message.reply_text("Выберите пользователя:", reply_markup=ReplyKeyboardMarkup([[f"#{r['id']} {r['label']}"] for r in rows] + [["Отмена"]], resize_keyboard=True))
     elif text == "➕ Новый ключ":
         context.user_data["awaiting_new_label"] = True
         await update.effective_message.reply_text("Введите метку нового пользователя (1–80 символов), либо нажмите «Отмена».")
+        return
     elif context.user_data.get("awaiting_new_label"):
         context.user_data.pop("awaiting_new_label", None)
-        try:
-            created = registry().add_user(text)
-            await update.effective_message.reply_text(f"Создан пользователь #{created['id']}. Теперь нажмите «Назначить профили».")
-        except Exception as exc:
-            await update.effective_message.reply_text(f"Не удалось создать запись ({type(exc).__name__}). Проверьте метку.")
+        context.user_data["new_label"] = text
+        context.user_data["awaiting_new_duration"] = True
+        await update.effective_message.reply_text("Выберите срок:", reply_markup=ReplyKeyboardMarkup([["1 день", "7 дней"], ["30 дней", "Бессрочно"], ["Отмена"]], resize_keyboard=True, one_time_keyboard=True))
     elif text == "➕ Профиль":
         context.user_data["profile_values"] = {}
         await update.effective_message.reply_text(PROMPTS["name"])
@@ -343,6 +344,14 @@ def main() -> None:
     app.add_handler(CommandHandler("links", links_command))
     app.add_handler(CommandHandler("revoke", revoke))
     app.add_handler(CommandHandler("cancel", cancel_command))
+    async def cleanup_job(context):
+        try:
+            from .runtime import runtime_from_env
+            runtime_from_env(registry()).cleanup_expired()
+        except Exception:
+            # Retry on the next interval; never issue links for expired records.
+            return
+    app.job_queue.run_repeating(cleanup_job, interval=60, first=10)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
     app.run_polling()
 

@@ -1,156 +1,98 @@
 #!/usr/bin/env bash
-# Единая установка VLESS Control и Xray. Ничего не запускает автоматически.
+# Fresh-server-only installer. Never adopts or replaces an existing Xray installation.
 set -Eeuo pipefail
-
 PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ENV_FILE="$PROJECT_DIR/.env"
-REPLACE=0
-for arg in "$@"; do
-  case "$arg" in
-    --replace-existing) REPLACE=1 ;;
-    --help|-h) printf 'Использование: sudo ./install.sh [--replace-existing]\n'; exit 0 ;;
-    *) printf 'Неизвестный параметр: %s\n' "$arg" >&2; exit 2 ;;
-  esac
-done
+XRAY_BINARY=/usr/local/bin/xray
+XRAY_CONFIG_PATH=/usr/local/etc/xray/config.json
+XRAY_SERVICE=xray
+XRAY_MANAGED_PROFILE_TAG=vless-control-managed
+VLESS_CONTROL_UNIT=/etc/systemd/system/vless-control.service
+XRAY_UNIT=/etc/systemd/system/xray.service
 
-[[ $EUID -eq 0 ]] || { printf 'Запустите от root: sudo ./install.sh\n' >&2; exit 1; }
-command -v apt-get >/dev/null || { printf 'Поддерживаются Ubuntu/Debian с apt-get.\n' >&2; exit 1; }
+fail() { printf '%s\n' "$*" >&2; exit 1; }
+[[ $EUID -eq 0 ]] || fail 'Запустите от root: sudo ./install.sh'
+command -v apt-get >/dev/null || fail 'Поддерживаются Ubuntu/Debian с apt-get.'
 source /etc/os-release
-case "${ID:-}" in ubuntu|debian) ;; *) printf 'ОС не поддерживается: %s\n' "${PRETTY_NAME:-unknown}" >&2; exit 1;; esac
+case "${ID:-}" in ubuntu|debian) ;; *) fail "ОС не поддерживается: ${PRETTY_NAME:-unknown}";; esac
+
+# Detect system package installs, alternate layouts, configs, and units before any writes.
+for path in "$XRAY_BINARY" "$XRAY_CONFIG_PATH" "$XRAY_UNIT" "$VLESS_CONTROL_UNIT" "$ENV_FILE" /usr/bin/xray /usr/sbin/xray /etc/xray /etc/xray/config.json /usr/local/etc/xray /etc/systemd/system/xray.service.d; do
+  [[ ! -e "$path" ]] || fail "Обнаружен существующий Xray/конфиг/unit ($path). Установка разрешена только на чистом сервере; ничего не изменено."
+done
+if command -v dpkg-query >/dev/null && dpkg-query -W -f='${Status}' xray 2>/dev/null | grep -q 'install ok installed'; then
+  fail 'Обнаружен установленный пакет Xray; ничего не изменено.'
+fi
+if systemctl list-unit-files --no-legend 2>/dev/null | awk '{print $1}' | grep -Eq '^(xray|vless-control)\.service$'; then
+  fail 'Обнаружена существующая systemd-служба; ничего не изменено.'
+fi
+
+read -rsp 'Telegram bot token: ' TELEGRAM_BOT_TOKEN; printf '\n'
+read -rp 'Telegram admin IDs (comma-separated numeric IDs): ' TELEGRAM_ADMIN_IDS
+read -rp 'Public server host/IP for client links: ' PUBLIC_SERVER_HOST
+read -rp 'Managed VLESS TCP port [443]: ' XRAY_MANAGED_VLESS_PORT
+XRAY_MANAGED_VLESS_PORT=${XRAY_MANAGED_VLESS_PORT:-443}
+[[ -n "$TELEGRAM_BOT_TOKEN" && "$TELEGRAM_ADMIN_IDS" =~ ^[0-9]+(,[0-9]+)*$ ]] || fail 'Нужны токен и числовые ID администраторов.'
+[[ "$PUBLIC_SERVER_HOST" =~ ^[A-Za-z0-9.-]+$ && "$PUBLIC_SERVER_HOST" != .* && "$PUBLIC_SERVER_HOST" != *. && "$PUBLIC_SERVER_HOST" != *..* ]] || fail 'Недопустимый публичный host/IP.'
+[[ "$XRAY_MANAGED_VLESS_PORT" =~ ^[0-9]+$ ]] && (( XRAY_MANAGED_VLESS_PORT > 0 && XRAY_MANAGED_VLESS_PORT < 65536 )) || fail 'Недопустимый порт.'
+command -v ss >/dev/null || fail 'Не найден ss; нельзя безопасно проверить порт.'
+! ss -H -lnt "sport = :$XRAY_MANAGED_VLESS_PORT" | grep -q . || fail "TCP-порт занят: $XRAY_MANAGED_VLESS_PORT; ничего не изменено."
 
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip curl ca-certificates unzip
-
 cd "$PROJECT_DIR"
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -e .
 
-if [[ ! -e "$ENV_FILE" ]]; then
-  read -rsp 'Telegram bot token: ' TELEGRAM_BOT_TOKEN; printf '\n'
-  read -rp 'Telegram admin IDs (comma-separated): ' TELEGRAM_ADMIN_IDS
-  read -rp 'Database path [/var/lib/vless-control/bot.db]: ' DATABASE_PATH
-  read -rp 'Xray binary [/usr/local/bin/xray]: ' XRAY_BINARY
-  read -rp 'Xray config [/usr/local/etc/xray/config.json]: ' XRAY_CONFIG_PATH
-  read -rp 'Xray service [xray]: ' XRAY_SERVICE
-  DATABASE_PATH=${DATABASE_PATH:-/var/lib/vless-control/bot.db}
-  XRAY_BINARY=${XRAY_BINARY:-/usr/local/bin/xray}
-  XRAY_CONFIG_PATH=${XRAY_CONFIG_PATH:-/usr/local/etc/xray/config.json}
-  XRAY_SERVICE=${XRAY_SERVICE:-xray}
-  umask 077
-  printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_ADMIN_IDS=%s\nDATABASE_PATH=%s\nXRAY_CONFIG_PATH=%s\nXRAY_BINARY=%s\nXRAY_SERVICE=%s\n' "$TELEGRAM_BOT_TOKEN" "$TELEGRAM_ADMIN_IDS" "$DATABASE_PATH" "$XRAY_CONFIG_PATH" "$XRAY_BINARY" "$XRAY_SERVICE" > "$ENV_FILE"
-  chmod 600 "$ENV_FILE"
-fi
-# Load dotenv as data (never source/eval user-provided values as shell code).
-while IFS='=' read -r key value; do
-  case "$key" in
-    TELEGRAM_BOT_TOKEN|TELEGRAM_ADMIN_IDS|DATABASE_PATH|XRAY_CONFIG_PATH|XRAY_BINARY|XRAY_SERVICE)
-      printf -v "$key" '%s' "$value" ;;
-  esac
-done < "$ENV_FILE"
-[[ "$XRAY_BINARY" == /* && "$XRAY_CONFIG_PATH" == /* ]] || { printf 'Пути Xray должны быть абсолютными.\n' >&2; exit 1; }
-[[ "$XRAY_SERVICE" =~ ^[a-zA-Z0-9_.@-]+$ ]] || { printf 'Недопустимое имя systemd-службы.\n' >&2; exit 1; }
-DEFAULT_REALITY_SNI="www.cloudflare.com"
-read -rp "REALITY SNI hostname [$DEFAULT_REALITY_SNI] (Enter = default): " REALITY_SNI
-REALITY_SNI=${REALITY_SNI:-$DEFAULT_REALITY_SNI}
-read -rp 'VLESS inbound port [443]: ' REALITY_PORT
-REALITY_PORT=${REALITY_PORT:-443}
-[[ "$REALITY_SNI" =~ ^[A-Za-z0-9.-]{1,253}$ && "$REALITY_SNI" == *.* && "$REALITY_SNI" != .* && "$REALITY_SNI" != *. && "$REALITY_SNI" != *..* ]] || { printf 'Недопустимый SNI. Введите только доменное имя, например www.cloudflare.com, без https:// и пути.\n' >&2; exit 1; }
-[[ "$REALITY_PORT" =~ ^[0-9]+$ ]] && (( REALITY_PORT > 0 && REALITY_PORT < 65536 )) || { printf 'Недопустимый порт.\n' >&2; exit 1; }
-command -v ss >/dev/null && ! ss -H -lnt "sport = :$REALITY_PORT" | grep -q . || { printf 'Порт занят или ss недоступен: %s\n' "$REALITY_PORT" >&2; exit 1; }
-
-XRAY_UNIT="/etc/systemd/system/${XRAY_SERVICE}.service"
-existing=0
-for path in "$XRAY_BINARY" "$XRAY_CONFIG_PATH" "$XRAY_UNIT" /etc/systemd/system/vless-control.service; do
-  [[ -e "$path" ]] && existing=1
-done
-if (( existing )); then
-  if [[ -e "$XRAY_CONFIG_PATH" ]] || systemctl is-active --quiet "$XRAY_SERVICE" 2>/dev/null; then
-    printf 'Обнаружен существующий Xray-конфиг или активная служба. Установка REALITY заменяет весь конфиг и запрещена без отдельной безопасной миграции; --replace-existing не переопределяет этот запрет.\n' >&2
-    exit 1
-  fi
-  [[ $REPLACE -eq 1 ]] || { printf 'Обнаружена существующая установка; без --replace-existing замена запрещена.\n' >&2; exit 1; }
-  printf 'Обнаружены неактивные файлы. Создать backup и заменить? [y/N]: '
-  read -r answer
-  [[ "$answer" == y || "$answer" == Y ]] || { printf 'Отменено.\n'; exit 1; }
-fi
-
-backup_dir=/root/vless-control-backups/$(date +%Y%m%d_%H%M%S)
-mkdir -p "$backup_dir"
-for path in "$XRAY_BINARY" "$XRAY_CONFIG_PATH" "$XRAY_UNIT" /etc/systemd/system/vless-control.service; do
-  if [[ -e "$path" ]]; then
-    dest="$backup_dir$(dirname -- "$path")"
-    mkdir -p "$dest"
-    cp -a "$path" "$dest/"
-    cmp -s "$path" "$dest/$(basename -- "$path")" || { printf 'Backup verification failed: %s\n' "$path" >&2; exit 1; }
-  fi
-done
-
 arch=$(uname -m)
-case "$arch" in
-  x86_64|amd64) asset='Xray-linux-64.zip' ;;
-  aarch64|arm64) asset='Xray-linux-arm64-v8a.zip' ;;
-  armv7l|armv7*) asset='Xray-linux-arm32-v7a.zip' ;;
-  *) printf 'Неподдерживаемая архитектура: %s\n' "$arch" >&2; exit 1;;
-esac
+case "$arch" in x86_64|amd64) asset='Xray-linux-64.zip' ;; aarch64|arm64) asset='Xray-linux-arm64-v8a.zip' ;; armv7l|armv7*) asset='Xray-linux-arm32-v7a.zip' ;; *) fail "Неподдерживаемая архитектура: $arch";; esac
 read -r tag url checksum < <(.venv/bin/python - "$asset" <<'PY'
-import json, sys, urllib.request
+import json,sys,urllib.request
 asset=sys.argv[1]
-with urllib.request.urlopen('https://api.github.com/repos/XTLS/Xray-core/releases/latest', timeout=30) as r:
-    release=json.load(r)
+with urllib.request.urlopen('https://api.github.com/repos/XTLS/Xray-core/releases/latest',timeout=30) as r: release=json.load(r)
 files={a['name']:a['browser_download_url'] for a in release['assets']}
 if asset not in files or asset+'.dgst' not in files: raise SystemExit('официальный архив или checksum не найден')
-with urllib.request.urlopen(files[asset]+'.dgst', timeout=30) as r: text=r.read().decode()
-sha=next((line.split('=',1)[1].strip() for line in text.splitlines() if line.startswith('SHA2-256=')), None)
-if not sha: raise SystemExit('SHA2-256 отсутствует в официальном checksum')
-print(release['tag_name'], files[asset], sha)
+with urllib.request.urlopen(files[asset]+'.dgst',timeout=30) as r: text=r.read().decode()
+sha=next((line.split('=',1)[1].strip() for line in text.splitlines() if line.startswith('SHA2-256=')),None)
+if not sha: raise SystemExit('SHA2-256 отсутствует')
+print(release['tag_name'],files[asset],sha)
 PY
 )
-printf 'Скачивается официальный Xray %s (%s)...\n' "$tag" "$asset"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 curl --fail --location --retry 3 --output "$tmp/xray.zip" "$url"
 printf '%s  %s\n' "$checksum" "$tmp/xray.zip" | sha256sum --check --status
 .venv/bin/python - "$tmp/xray.zip" "$tmp/extract" <<'PY'
-import sys, zipfile
+import sys,zipfile
 from pathlib import Path
-archive, dest = map(Path, sys.argv[1:]); dest.mkdir()
+archive,dest=map(Path,sys.argv[1:]); dest.mkdir()
 with zipfile.ZipFile(archive) as z:
-    for info in z.infolist():
-        p=Path(info.filename)
-        if p.is_absolute() or '..' in p.parts or info.is_dir() or not info.filename:
-            continue
-        if p.name == 'xray':
-            target=dest/p.name
-            with z.open(info) as src, target.open('wb') as out: out.write(src.read())
-            break
-    else: raise SystemExit('файл xray не найден в архиве')
+ for info in z.infolist():
+  p=Path(info.filename)
+  if p.is_absolute() or '..' in p.parts or info.is_dir(): continue
+  if p.name=='xray':
+   with z.open(info) as src,(dest/'xray').open('wb') as out: out.write(src.read())
+   break
+ else: raise SystemExit('файл xray не найден')
 PY
-install -d -m 755 "$(dirname -- "$XRAY_BINARY")" "$(dirname -- "$XRAY_CONFIG_PATH")"
-install -m 755 "$tmp/extract/xray" "$XRAY_BINARY"
-"$XRAY_BINARY" version >/dev/null
-reality_keys=$("$XRAY_BINARY" x25519)
-PRIVATE_KEY=$(printf '%s\n' "$reality_keys" | awk -F': ' '/Private key:/ {print $2}')
-PUBLIC_KEY=$(printf '%s\n' "$reality_keys" | awk -F': ' '/Password/ {print $2}')
-[[ "$PRIVATE_KEY" =~ ^[A-Za-z0-9_-]{32,128}$ && "$PUBLIC_KEY" =~ ^[A-Za-z0-9_-]{32,128}$ ]] || { printf 'Xray x25519 key generation failed.\n' >&2; exit 1; }
-SHORT_ID=$(openssl rand -hex 8)
-CONFIG_TMP=$(mktemp "$(dirname -- "$XRAY_CONFIG_PATH")/.xray-config.XXXXXX")
-build_reality_bootstrap_config() {
-  "$PROJECT_DIR/.venv/bin/python" - "$REALITY_PORT" "$REALITY_SNI" "$PRIVATE_KEY" "$SHORT_ID" > "$CONFIG_TMP" <<'PY'
+"$tmp/extract/xray" version >/dev/null
+install -d -m 755 /usr/local/bin /usr/local/etc/xray
+# Atomic no-clobber creation: link fails if another process populated the target.
+install -m 755 "$tmp/extract/xray" "$tmp/xray"
+ln "$tmp/xray" "$XRAY_BINARY" || fail 'Xray binary target appeared; refusing overwrite.'
+CONFIG_TMP=$(mktemp /usr/local/etc/xray/.config.XXXXXX)
+.venv/bin/python - "$XRAY_MANAGED_VLESS_PORT" "$XRAY_MANAGED_PROFILE_TAG" > "$CONFIG_TMP" <<'PY'
 import json,sys
-port,sni,key,sid=sys.argv[1:]
-config={"log":{"loglevel":"warning"},"inbounds":[{"tag":"vless-reality-in","listen":"0.0.0.0","port":int(port),"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"show":False,"dest":f"{sni}:443","xver":0,"serverNames":[sni],"privateKey":key,"shortIds":[sid]}}}],"outbounds":[{"protocol":"freedom","tag":"direct"}]}
+port,tag=sys.argv[1:]
+config={"log":{"loglevel":"warning"},"inbounds":[{"tag":tag,"listen":"0.0.0.0","port":int(port),"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"tcp","security":"none"}}],"outbounds":[{"protocol":"freedom","tag":"direct"}]}
 json.dump(config,sys.stdout,indent=2); print()
 PY
-}
-build_reality_bootstrap_config
 "$XRAY_BINARY" run -test -config "$CONFIG_TMP"
-install -d -m 755 "$(dirname -- "$XRAY_CONFIG_PATH")"
-install -m 600 "$CONFIG_TMP" "$XRAY_CONFIG_PATH.new"
-mv -f -- "$XRAY_CONFIG_PATH.new" "$XRAY_CONFIG_PATH"
-rm -f "$CONFIG_TMP"
-
-cat > "$XRAY_UNIT" <<EOF
+ln "$CONFIG_TMP" "$XRAY_CONFIG_PATH" || fail 'Xray config target appeared; refusing overwrite.'
+rm "$CONFIG_TMP"
+# No-overwrite unit creation using temporary files and hard links.
+cat > "$tmp/xray.service" <<EOF
 [Unit]
 Description=Xray
 After=network-online.target
@@ -164,7 +106,7 @@ PrivateTmp=true
 [Install]
 WantedBy=multi-user.target
 EOF
-cat > /etc/systemd/system/vless-control.service <<EOF
+cat > "$tmp/vless-control.service" <<EOF
 [Unit]
 Description=VLESS Control Telegram bot
 After=network-online.target
@@ -179,15 +121,18 @@ NoNewPrivileges=true
 [Install]
 WantedBy=multi-user.target
 EOF
-chmod 644 "$XRAY_UNIT" /etc/systemd/system/vless-control.service
+install -d -m 755 /etc/systemd/system
+ln "$tmp/xray.service" "$XRAY_UNIT" || fail 'Xray unit target appeared; refusing overwrite.'
+ln "$tmp/vless-control.service" "$VLESS_CONTROL_UNIT" || fail 'Bot unit target appeared; refusing overwrite.'
+umask 077
+ENV_TMP=$(mktemp "$PROJECT_DIR/.env.XXXXXX")
+printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_ADMIN_IDS=%s\nPUBLIC_SERVER_HOST=%s\nDATABASE_PATH=/var/lib/vless-control/bot.db\nXRAY_CONFIG_PATH=%s\nXRAY_BINARY=%s\nXRAY_SERVICE=%s\nXRAY_MANAGED_VLESS_PORT=%s\nXRAY_MANAGED_PROFILE_TAG=%s\n' "$TELEGRAM_BOT_TOKEN" "$TELEGRAM_ADMIN_IDS" "$PUBLIC_SERVER_HOST" "$XRAY_CONFIG_PATH" "$XRAY_BINARY" "$XRAY_SERVICE" "$XRAY_MANAGED_VLESS_PORT" "$XRAY_MANAGED_PROFILE_TAG" > "$ENV_TMP"
+ln "$ENV_TMP" "$ENV_FILE" || fail '.env already exists; refusing overwrite.'
+rm "$ENV_TMP"
+chmod 600 "$ENV_FILE"
 systemctl daemon-reload
-printf '\nГотово. Xray и бот установлены, но НЕ запущены и НЕ включены.\nBackup: %s\n' "$backup_dir"
-printf 'Valid VLESS/REALITY inbound configured on %s:%s. No VLESS client is created; add clients through the bot after startup.\n' "$REALITY_SNI" "$REALITY_PORT"
-printf 'To enable/start both services now, explicitly type YES: '
+printf 'Установка завершена; службы оставлены остановленными и выключенными.\n'
+printf 'Конфигурация: VLESS/TCP, security none, tag=%s, port=%s. Убедитесь, что порт открыт в firewall.\n' "$XRAY_MANAGED_PROFILE_TAG" "$XRAY_MANAGED_VLESS_PORT"
+printf 'Для явного запуска обеих служб введите YES: '
 read -r consent
-if [[ "$consent" == YES ]]; then
-  systemctl enable --now "$XRAY_SERVICE"
-  systemctl enable --now vless-control
-else
-  printf 'Services left stopped and disabled.\n'
-fi
+if [[ "$consent" == YES ]]; then systemctl enable --now xray && systemctl enable --now vless-control; else printf 'Службы оставлены остановленными и выключенными.\n'; fi

@@ -20,37 +20,40 @@ class InstallerScriptTests(unittest.TestCase):
         text = script.read_text()
         self.assertIn("systemctl daemon-reload", text)
         import re
-        self.assertIn('systemctl enable --now "$XRAY_SERVICE"', text)
+        self.assertIn('systemctl enable --now xray', text)
+        self.assertIn('XRAY_MANAGED_PROFILE_TAG', text)
         self.assertIn('"$XRAY_BINARY"', text)
         self.assertIn('"$XRAY_CONFIG_PATH"', text)
-        self.assertIn("XRAY_SERVICE}.service", text)
+        self.assertIn('XRAY_UNIT=/etc/systemd/system/xray.service', text)
         self.assertIn("sha256sum --check", text)
 
     def test_first_install_includes_config_and_requires_explicit_start_confirmation(self):
         text = (Path(__file__).resolve().parents[1] / "install.sh").read_text()
-        self.assertIn("build_reality_bootstrap_config", text)
+        self.assertIn('"security":"none"', text)
         self.assertIn("run -test -config", text)
         self.assertIn('"$XRAY_CONFIG_PATH"', text)
         self.assertIn('"$XRAY_BINARY"', text)
         self.assertIn('systemctl enable --now', text)
+        self.assertIn('ln "$CONFIG_TMP" "$XRAY_CONFIG_PATH"', text)
+        self.assertIn('XRAY_MANAGED_PROFILE_TAG', text)
 
-    def test_installer_configures_reality_and_preserves_existing_env(self):
+    def test_installer_configures_plain_managed_inbound_without_overwrite(self):
         text = (Path(__file__).resolve().parents[1] / "install.sh").read_text()
-        for required in ("read -rsp", "x25519", "openssl rand", "run -test -config",
-                         "build_reality_bootstrap_config", "backup_dir", "cmp -s",
-                         "ss -H -lnt", "XRAY_CONFIG_PATH"):
+        for required in ("read -rsp", "XRAY_MANAGED_VLESS_PORT", "PUBLIC_SERVER_HOST",
+                         "ss -H -lnt", "XRAY_MANAGED_PROFILE_TAG", "ln \"$tmp/xray\" \"$XRAY_BINARY\""):
             self.assertIn(required, text)
-        self.assertIn("No VLESS client is created", text)
-        self.assertIn('DEFAULT_REALITY_SNI="www.cloudflare.com"', text)
-        self.assertIn('REALITY_SNI=${REALITY_SNI:-$DEFAULT_REALITY_SNI}', text)
-        self.assertIn("без https:// и пути", text)
-        self.assertNotIn('write_env(prompt_env(), ".env")', text)
+        self.assertIn("NoNewPrivileges=true", text)
+        self.assertIn("never replaces", text.lower()) if "never replaces" in text.lower() else self.assertIn("Never adopts or replaces", text)
+
+    def test_installer_refuses_existing_files_before_any_install_writes(self):
+        text = (Path(__file__).resolve().parents[1] / "install.sh").read_text()
+        self.assertLess(text.index("# Detect system package"), text.index("apt-get update"))
+        self.assertIn('"$XRAY_CONFIG_PATH"', text)
+        self.assertIn('"$XRAY_UNIT"', text)
+        self.assertIn('"$VLESS_CONTROL_UNIT"', text)
+        self.assertIn("dpkg-query", text)
 
     def test_installer_parses_actual_xray_public_key_label(self):
-        text = (Path(__file__).resolve().parents[1] / "install.sh").read_text()
-        self.assertIn("Password", text)
-        self.assertIn("SHORT_ID", text)
-
         text = (Path(__file__).resolve().parents[1] / "install.sh").read_text()
         self.assertIn('"$XRAY_UNIT"', text)
         self.assertIn("vless-control.service", text)
