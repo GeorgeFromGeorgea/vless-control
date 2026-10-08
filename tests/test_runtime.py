@@ -149,7 +149,7 @@ class RuntimeTests(unittest.TestCase):
             report=self.service.monitor()
         self.assertTrue(report[0]["online"])
 
-    def test_monitor_empty_stats_response_is_authoritative_offline(self):
+    def test_monitor_empty_stats_response_is_unknown_until_probe(self):
         item=self.service.create("monitor-empty")
         config=json.loads(self.path.read_text())
         config["api"]={"tag":"api","services":["StatsService","HandlerService"]}
@@ -159,8 +159,8 @@ class RuntimeTests(unittest.TestCase):
         self.path.write_text(json.dumps(config))
         with patch("vless_control.runtime.subprocess.run", return_value=SimpleNamespace(stdout="{}", returncode=0)):
             report=self.service.monitor()
-        self.assertFalse(report[0]["online"])
-        self.assertNotIn("monitor_error",report[0])
+        self.assertIsNone(report[0]["online"])
+        self.assertIn("monitor_error",report[0])
 
     def test_monitor_api_failure_is_not_reported_as_offline(self):
         item=self.service.create("monitor-api-down")
