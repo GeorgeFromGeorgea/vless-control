@@ -35,6 +35,7 @@ class InstallerScriptTests(unittest.TestCase):
         self.assertIn('"$XRAY_BINARY"', text)
         self.assertIn('systemctl enable --now', text)
         self.assertIn('ln "$CONFIG_TMP" "$XRAY_CONFIG_PATH"', text)
+        self.assertIn('mktemp --suffix=.json', text)
         self.assertIn('XRAY_MANAGED_PROFILE_TAG', text)
 
     def test_installer_configures_plain_managed_inbound_without_overwrite(self):

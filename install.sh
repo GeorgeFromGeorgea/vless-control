@@ -92,7 +92,7 @@ install -d -m 755 /usr/local/bin /usr/local/etc/xray
 # Atomic no-clobber creation: link fails if another process populated the target.
 install -m 755 "$tmp/extract/xray" "$tmp/xray"
 ln "$tmp/xray" "$XRAY_BINARY" || fail 'Xray binary target appeared; refusing overwrite.'
-CONFIG_TMP=$(mktemp /usr/local/etc/xray/.config.XXXXXX)
+CONFIG_TMP=$(mktemp --suffix=.json /usr/local/etc/xray/.config.XXXXXX)
 .venv/bin/python - "$XRAY_MANAGED_VLESS_PORT" "$XRAY_MANAGED_PROFILE_TAG" > "$CONFIG_TMP" <<'PY'
 import json,sys
 port,tag=sys.argv[1:]
