@@ -46,7 +46,12 @@ class Registry:
             raise ValueError("expires_at must be in the future")
         exp=iso(expires_at) if expires_at else None; ident=str(uuid.uuid4())
         with self._connect() as db:
-            cur=db.execute("INSERT INTO users(label,client_uuid,expires_at,status,active) VALUES(?,?,?,'active',1)",(label,ident,exp))
+            try:
+                cur=db.execute("INSERT INTO users(label,client_uuid,expires_at,status,active) VALUES(?,?,?,'active',1)",(label,ident,exp))
+            except sqlite3.IntegrityError as exc:
+                if db.execute("SELECT 1 FROM users WHERE label=?", (label,)).fetchone():
+                    raise ValueError("label already exists; choose a different label") from exc
+                raise
             return {"id":cur.lastrowid,"label":label,"uuid":ident,"expires_at":exp,"status":"active"}
     def list_users(self, include_expired=True):
         with self._connect() as db:
