@@ -172,7 +172,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         try:
             from .runtime import runtime_from_env
             item = runtime_from_env(registry()).create(label, days)
-            await update.effective_message.reply_text("Ключ применён в Xray. Ссылка:")
+            await update.effective_message.reply_text("Ключ применён в Xray. Ссылки для доступных профилей:")
             await send_links(update, item["id"])
         except Exception as exc:
             await update.effective_message.reply_text(f"Ключ не выдан: применение не подтверждено ({type(exc).__name__}).")
@@ -221,12 +221,17 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await send_links(update, int(user_id))
         return
     if context.user_data.get("awaiting_new_label"):
+        label = text.strip()
+        if not label or len(label) > 80:
+            await update.effective_message.reply_text("Метка должна содержать от 1 до 80 символов. Введите метку или нажмите «Отмена».")
+            return
         context.user_data.pop("awaiting_new_label", None)
-        try:
-            created = registry().add_user(text)
-            await update.effective_message.reply_text(f"Создан пользователь #{created['id']}. Теперь нажмите «Назначить профили».")
-        except Exception as exc:
-            await update.effective_message.reply_text(f"Не удалось создать запись ({type(exc).__name__}). Проверьте метку.")
+        context.user_data["new_label"] = label
+        context.user_data["awaiting_new_duration"] = "new-key-duration"
+        await update.effective_message.reply_text(
+            "Выберите срок:",
+            reply_markup=ReplyKeyboardMarkup([["1 день", "7 дней"], ["30 дней", "Бессрочно"], ["Отмена"]], resize_keyboard=True, one_time_keyboard=True),
+        )
         return
     if context.user_data.get("profile_values") is not None:
         values = context.user_data["profile_values"]

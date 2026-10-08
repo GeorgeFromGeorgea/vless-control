@@ -55,18 +55,20 @@ class RuntimeService:
         if not self.target_tag:
             raise ValueError("XRAY_MANAGED_PROFILE_TAG is required")
         clients = self.registry.xray_assignments()
+        assignments = {tag: clients[tag]}
+        ws_tag = "vless-control-ws-8088"
+        if any(i.get("tag") == ws_tag for i in config.get("inbounds", [])) and ws_tag in clients:
+            assignments[ws_tag] = clients[ws_tag]
         if override:
             uuid, status = override
-            for values in clients.values():
+            for values in assignments.values():
                 values[:] = [c for c in values if c["id"] != uuid]
             if status == "active":
                 with self.registry._connect() as db:
                     rows = db.execute("SELECT p.name FROM user_profiles up JOIN profiles p ON p.id=up.profile_id WHERE up.user_id=(SELECT id FROM users WHERE client_uuid=?) AND p.active=1", (uuid,)).fetchall()
                 for row in rows:
-                    clients.setdefault(row["name"], []).append({"id":uuid,"email":f"vless-control-{uuid}"})
-        if tag not in clients:
-            clients[tag] = []
-        assignments = {tag: clients[tag]}
+                    if row["name"] in assignments:
+                        assignments[row["name"]].append({"id":uuid,"email":f"vless-control-{uuid}"})
         candidate = reconcile_clients(config, assignments, target_port=self.port)
         # For a selected port, prune only explicitly manager-marked clients even
         # if they are stale/orphaned in the runtime registry.
@@ -76,13 +78,26 @@ class RuntimeService:
         with process_lock(self.lock_path):
             item = self.registry.add_user(label, days=days)
             try:
-                profile_id = self._profile()
-                self.registry.assign_profiles(item["id"], [profile_id])
+                profile_ids = self._profiles()
+                self.registry.assign_profiles(item["id"], profile_ids)
                 self._apply()
             except Exception:
                 self.registry.rollback_user(item["id"])
                 raise
             return item
+
+    def _profiles(self):
+        tcp_id = self._profile()
+        with self.registry._connect() as db:
+            ws = db.execute("SELECT * FROM profiles WHERE active=1 AND name=?", ("vless-control-ws-8088",)).fetchone()
+        if ws:
+            if not any(i.get("tag") == "vless-control-ws-8088" for i in json.loads(Path(self.config_path).read_text()).get("inbounds", [])):
+                raise ValueError("WS profile exists but matching Xray inbound is absent")
+            expected = {"host": self.host, "port": 8088, "security": "none", "transport": "ws", "path": "/vless-ws"}
+            if any(ws[key] != value for key, value in expected.items()):
+                raise ValueError("managed WS profile does not match host/port/transport/path")
+            return [tcp_id, int(ws["id"])]
+        return [tcp_id]
 
     def _profile(self):
         with self.registry._connect() as db:
