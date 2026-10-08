@@ -175,6 +175,18 @@ class RuntimeService:
                 # this is ambiguous and must not be presented as offline.
                 if not online:
                     raise RuntimeError("Xray returned no online-user records; status is unverified")
+                connections = {}
+                for user in users:
+                    email = f"vless-control-{user['uuid']}"
+                    session = subprocess.run(
+                        [self.xray_binary, "api", "statsonlineiplist", "-email", email, "--server=127.0.0.1:10085", "--timeout=3"],
+                        check=False, capture_output=True, text=True, timeout=5,
+                    )
+                    if session.returncode != 0:
+                        raise RuntimeError("Xray per-user session query failed")
+                    session_raw = json.loads(session.stdout or "{}")
+                    ips = session_raw.get("ips") if isinstance(session_raw, dict) else None
+                    connections[user["id"]] = len(ips) if isinstance(ips, dict) else 0
                 error = None
             except Exception as exc:
                 online = set()
@@ -183,6 +195,7 @@ class RuntimeService:
                 {"id": u["id"], "label": u["label"], "status": u["status"],
                  "expires_at": u["expires_at"],
                  "online": None if error else f"vless-control-{u['uuid']}" in online,
+                 "connections": None if error else connections.get(u["id"], 0),
                  **({"monitor_error": error} if error else {})}
                 for u in users
             ]

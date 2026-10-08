@@ -305,7 +305,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             lines = []
             for row in report:
                 state = "🟢 онлайн" if row.get("online") is True else "⚪ не в сети" if row.get("online") is False else "⚠️ статус неизвестен"
-                lines.append(f"#{row['id']} {row['label']} — {state} — {row['status']}")
+                lines.append(f"#{row['id']} {row['label']} — {state} — подключений: {row.get('connections', '—')} — {row['status']}")
             text_out = "\n".join(lines) or "Пользователей нет."
             if report and report[0].get("monitor_error"):
                 text_out += "\nОшибка опроса Xray API; онлайн-статус не определён."

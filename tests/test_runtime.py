@@ -145,7 +145,7 @@ class RuntimeTests(unittest.TestCase):
         config["routing"]={"rules":[{"type":"field","inboundTag":["api"],"outboundTag":"api"}]}
         self.path.write_text(json.dumps(config))
         email="vless-control-"+item["uuid"]
-        with patch("vless_control.runtime.subprocess.run", return_value=SimpleNamespace(stdout=json.dumps([email]), returncode=0)):
+        with patch("vless_control.runtime.subprocess.run", side_effect=[SimpleNamespace(stdout=json.dumps([email]), returncode=0), SimpleNamespace(stdout=json.dumps({"ips":{"1.2.3.4":1}}), returncode=0)]):
             report=self.service.monitor()
         self.assertTrue(report[0]["online"])
 
@@ -158,9 +158,10 @@ class RuntimeTests(unittest.TestCase):
         config["routing"]={"rules":[{"type":"field","inboundTag":["api"],"outboundTag":"api"}]}
         self.path.write_text(json.dumps(config))
         envelope={"users":["user>>>vless-control-"+item["uuid"]+">>>online"]}
-        with patch("vless_control.runtime.subprocess.run", return_value=SimpleNamespace(stdout=json.dumps(envelope), returncode=0)):
+        with patch("vless_control.runtime.subprocess.run", side_effect=[SimpleNamespace(stdout=json.dumps({"users":["user>>>vless-control-"+item["uuid"]+">>>online"]}), returncode=0), SimpleNamespace(stdout=json.dumps({"ips":{"1.2.3.4":1,"5.6.7.8":2}}), returncode=0)]):
             report=self.service.monitor()
         self.assertTrue(report[0]["online"])
+        self.assertEqual(report[0]["connections"], 2)
     def test_monitor_empty_stats_response_is_unknown_until_probe(self):
         item=self.service.create("monitor-empty")
         config=json.loads(self.path.read_text())
