@@ -153,7 +153,7 @@ class RuntimeService:
                     rule.get("type") == "field" and api_tag in (rule.get("inboundTag") or []) and rule.get("outboundTag") == "api"
                     for rule in config.get("routing", {}).get("rules", [])
                 )
-                if not config.get("stats") or not {"StatsService", "HandlerService"}.issubset(services):
+                if "stats" not in config or not {"StatsService", "HandlerService"}.issubset(services):
                     raise RuntimeError("Xray stats/API services are not enabled")
                 if len(api_inbound) != 1 or api_inbound[0].get("listen", "127.0.0.1") not in {"127.0.0.1", "::1"} or not routed:
                     raise RuntimeError("Xray API must be routed through a loopback-only inbound")
