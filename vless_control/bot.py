@@ -29,9 +29,7 @@ def registry() -> Registry:
 
 CANCEL_TEXTS = {"Отмена", "❌ Отмена", "Отменить"}
 STATE_KEYS = (
-        "awaiting_assign_user", "awaiting_assign_profiles", "awaiting_link_user",
-    "awaiting_new_label", "awaiting_new_duration", "awaiting_manage_user", "awaiting_manage_action", "awaiting_delete_key", "profile_values", "assign_users", "assign_profiles",
-    "selected_assign_user", "link_users", "delete_key_choices", "manage_users",
+    "awaiting_new_label", "awaiting_new_duration", "awaiting_manage_user", "awaiting_manage_action", "awaiting_delete_key", "profile_values", "link_users", "delete_key_choices", "manage_users",
 )
 
 
@@ -40,13 +38,13 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     for key in STATE_KEYS:
         context.user_data.pop(key, None)
-    for key in ("awaiting_manage_confirm", "awaiting_delete_key", "delete_key_choices", "manage_id", "manage_users"):
+    for key in ("awaiting_manage_confirm", "awaiting_delete_key", "delete_key_choices", "manage_id", "manage_users", "assign_users", "assign_profiles", "selected_assign_user"):
         context.user_data.pop(key, None)
     await update.effective_message.reply_text("Действие отменено.", reply_markup=main_menu_keyboard())
 
 
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
-    keyboard = [["🔑 Получить ключ"], ["👤 Пользователи", "📡 Мониторинг"], ["➕ Новый ключ", "⚙️ Управление ключами"], ["🔑 Профили", "➕ Профиль"], ["🧩 Назначить профили", "🔗 Выдать ссылки"]]
+    keyboard = [["🔑 Получить ключ"], ["👤 Пользователи", "📡 Мониторинг"], ["➕ Новый ключ", "⚙️ Управление ключами"], ["🔑 Профили", "➕ Профиль"], ["🔗 Выдать ссылки"]]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
 
@@ -86,7 +84,7 @@ async def new_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as exc:
         await update.effective_message.reply_text(f"Не удалось создать пользователя: {type(exc).__name__}")
         return
-    await update.effective_message.reply_text(f"Создан пользователь #{item['id']}. Назначьте профили через /assign {item['id']} ID[,ID].")
+    await update.effective_message.reply_text(f"Создан пользователь #{item['id']}. Профили назначаются автоматически при выпуске через кнопку «Получить ключ».")
 
 
 async def profiles(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -275,7 +273,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if context.user_data.get("profile_values") is not None:
         values = context.user_data["profile_values"]
         field = next_field(values)
-        if text in {"👤 Пользователи", "➕ Новый ключ", "🧩 Назначить профили", "➕ Профиль", "🔑 Профили", "🔗 Выдать ссылки", "🔑 Получить ключ"}:
+        if text in {"👤 Пользователи", "➕ Новый ключ", "➕ Профиль", "🔑 Профили", "🔗 Выдать ссылки", "🔑 Получить ключ"}:
             await update.effective_message.reply_text(f"Выберите или введите значение для поля. {PROMPTS[field]} Нажмите «Отмена» для выхода.")
             return
         try:
@@ -344,8 +342,6 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await profiles(update, context)
     elif text == "🔗 Выдать ссылки":
         await choose_links(update, context)
-    elif text == "🧩 Назначить профили":
-        await choose_assign(update, context)
 
 
 async def send_links(update: Update, user_id: int) -> None:
@@ -361,20 +357,6 @@ async def send_links(update: Update, user_id: int) -> None:
 
 async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await button_router(update, context)
-
-
-async def assign_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not authorized(update):
-        return
-    try:
-        if len(context.args) != 2:
-            raise ValueError
-        user_id = int(context.args[0])
-        profile_ids = [int(x) for x in context.args[1].split(",")]
-        registry().assign_profiles(user_id, profile_ids)
-        await update.effective_message.reply_text("Профили назначены. Отправьте /links ID для получения ссылок.")
-    except Exception:
-        await update.effective_message.reply_text("Формат: /assign USER_ID PROFILE_ID[,PROFILE_ID]")
 
 
 async def links_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -418,7 +400,6 @@ def main() -> None:
     app.add_handler(CommandHandler("new_user", new_user))
     app.add_handler(CommandHandler("users", users))
     app.add_handler(CommandHandler("profiles", profiles))
-    app.add_handler(CommandHandler("assign", assign_command))
     app.add_handler(CommandHandler("links", links_command))
     app.add_handler(CommandHandler("revoke", revoke))
     app.add_handler(CommandHandler("cancel", cancel_command))
