@@ -120,5 +120,62 @@ def collect(config_path: str | Path = "/usr/local/etc/xray/config.json",
     )
 
 
-def render(report: PreflightReport) -> str:
+def render_json(report: PreflightReport) -> str:
     return json.dumps(report.to_dict(), ensure_ascii=False, indent=2) + "\n"
+
+
+def _owner(line: str) -> str:
+    lower = line.lower()
+    for name, label in (("xray", "Xray"), ("nginx", "nginx"), ("apache", "Apache"),
+                        ("docker-proxy", "Docker"), ("squid", "Squid"),
+                        ("amnezia", "Amnezia"), ("wireguard", "WireGuard")):
+        if name in lower:
+            return label
+    return "другая служба"
+
+
+def _port_scope(line: str) -> str:
+    return "локально" if "127.0.0.1:" in line or "[::1]:" in line else "внешний интерфейс"
+
+
+def render_human(report: PreflightReport) -> str:
+    lines = ["ПРОВЕРКА СЕРВЕРА ПЕРЕД УСТАНОВКОЙ", ""]
+    lines.append(f"ОС: {report.distribution} {report.release} — "
+                 f"{'поддерживается' if report.supported_os else 'НЕ поддерживается'}")
+    lines.append(f"Архитектура: {report.architecture}; Python: {report.python}")
+    lines.append(f"Права root: {'да' if report.root else 'нет'}")
+    lines.append("")
+    lines.append("ЗАНЯТЫЕ ПОРТЫ")
+    if not report.occupied_ports:
+        lines.append("- Из проверяемых портов занятых не найдено")
+    else:
+        for port, entries in report.occupied_ports.items():
+            owners = sorted({f"{_owner(entry)} ({_port_scope(entry)})" for entry in entries})
+            lines.append(f"- {port}/{'udp или tcp'} — {', '.join(owners)}")
+    lines.extend(("", "ПРОВЕРКА СЛУЖБ"))
+    for name, state in report.services.items():
+        label = "работает" if state == "active" else state
+        lines.append(f"- {name}.service — {label}")
+    lines.extend(("", "РЕКОМЕНДАЦИИ ПО ПОРТАМ"))
+    lines.append("- 443/tcp — предпочтительный порт, только если свободен")
+    lines.append("- 8443/tcp, 2053/tcp, 2083/tcp, 2087/tcp, 2096/tcp — альтернативы")
+    lines.append("- 10000–20000/tcp — запасной диапазон после проверки firewall")
+    lines.append("- 51820/udp — обычно WireGuard/AmneziaWG; Xray TCP ему не конфликтует")
+    lines.extend(("", "ИТОГ"))
+    if report.xray_present or report.config_present:
+        lines.append("- Установка второго Xray НЕ рекомендуется: найден существующий Xray или его конфигурация.")
+        lines.append("- Используйте существующую конфигурацию либо отдельный сервер.")
+    elif report.supported_os and report.root and not report.occupied_ports:
+        lines.append("- Базовая проверка пройдена; перед установкой откройте выбранный порт в firewall/VPS.")
+    else:
+        lines.append("- Установку пока не начинайте: исправьте предупреждения выше.")
+    if report.warnings:
+        lines.append("")
+        lines.append("ПРЕДУПРЕЖДЕНИЯ")
+        lines.extend(f"- {warning}" for warning in report.warnings)
+    return "\n".join(lines) + "\n"
+
+
+def render(report: PreflightReport) -> str:
+    """Backward-compatible JSON renderer."""
+    return render_json(report)

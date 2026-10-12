@@ -4,7 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from vless_control.preflight import collect, render
+from vless_control.preflight import collect, render, render_human
 
 
 class PreflightTests(unittest.TestCase):
@@ -29,6 +29,21 @@ class PreflightTests(unittest.TestCase):
             self.assertIn("LISTEN", report.occupied_ports["443"][0])
             self.assertIn("xray", report.services)
             self.assertIn('"supported_os": true', render(report))
+
+    def test_human_report_explains_ports_and_existing_xray(self):
+        report = type("Report", (), {
+            "distribution": "Ubuntu", "release": "24.04", "supported_os": True,
+            "architecture": "x86_64", "python": "3.12", "root": True,
+            "occupied_ports": {"443": ["LISTEN 0 128 0.0.0.0:443 users:((xray))"]},
+            "services": {"xray": "active", "nginx": "inactive"},
+            "xray_present": True, "config_present": True, "warnings": [],
+        })()
+        output = render_human(report)
+        self.assertIn("ЗАНЯТЫЕ ПОРТЫ", output)
+        self.assertIn("443/tcp", output)
+        self.assertIn("Xray", output)
+        self.assertIn("Установка второго Xray НЕ рекомендуется", output)
+        self.assertIn("8443/tcp", output)
 
     def test_unsupported_os_is_flagged(self):
         with patch("vless_control.preflight._read_os_release", return_value=("CentOS", "9")), \
