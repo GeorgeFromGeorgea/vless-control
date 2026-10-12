@@ -13,7 +13,7 @@ VLESS Control — экспериментальная панель управле
 Установщик рассчитан на чистый сервер. После клонирования проекта, но **до** запуска установщика, выполните одну понятную проверку:
 
 ```bash
-bash check-server.sh
+cd /root && if [ -d /root/vless-control/.git ]; then git -C /root/vless-control pull; else git clone https://github.com/GeorgeFromGeorgea/vless-control.git /root/vless-control; fi && bash /root/vless-control/check-server.sh
 ```
 
 Скрипт проверяет сервер в целом по системным признакам: активные процессы, установленные пакеты, стандартные пути Xray, systemd-службы, занятые порты и Docker. Он только читает состояние: ничего не останавливает, не устанавливает и не меняет. Он выводит:
@@ -116,10 +116,7 @@ sudo nft list ruleset
 Открытый порт означает только доступность сетевого входа. Он не гарантирует, что конкретный VLESS-профиль будет работать в каждой сети.
 
 ```bash
-git clone https://github.com/GeorgeFromGeorgea/vless-control.git
-cd vless-control
-bash check-server.sh
-sudo ./install.sh
+cd /root && if [ -d /root/vless-control/.git ]; then git -C /root/vless-control pull; else git clone https://github.com/GeorgeFromGeorgea/vless-control.git /root/vless-control; fi && cd /root/vless-control && bash /root/vless-control/check-server.sh && sudo ./install.sh
 ```
 
 Установка проверяет платформу, наличие Xray-конфигов/бинарников/systemd-служб и занятость TCP-порта до установки зависимостей. При любом обнаруженном Xray, конфиге или unit-файле прекращает работу, не пытаясь «починить» или заменить его. На чистой системе загружает официальный релиз Xray с проверкой SHA-256, создаёт конфигурацию с тегом `vless-control-managed` и параметрами VLESS/TCP без TLS/REALITY (`security: none`), проверяет её через `xray run -test`, затем создаёт `.env` и unit-файлы без перезаписи существующих файлов.
