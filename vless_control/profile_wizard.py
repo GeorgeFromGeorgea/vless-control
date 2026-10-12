@@ -48,6 +48,25 @@ PROMPTS = {
     "path": "Введите WebSocket path, начиная с /:",
 }
 
+PREFERRED_PORT_HINT = "Рекомендации: 443 — стандартный HTTPS/TLS; 8080/8088 — HTTP/WS; 8443 — альтернативный HTTPS/TLS; 10000–20000 — свободный запасной диапазон. Порт 80 обычно занят веб-сервером. Выбор не гарантирует доступность извне: проверьте firewall."
+
+
+def port_occupants(port: int) -> list[str]:
+    """Return local listeners using a port; failure is reported as unknown."""
+    try:
+        result = __import__("subprocess").run(["ss", "-H", "-ltnup"], capture_output=True, text=True, timeout=3, check=True)
+    except Exception as exc:
+        raise RuntimeError("не удалось проверить занятость порта") from exc
+    needle = f":{port}"
+    return [line.strip()[:240] for line in result.stdout.splitlines() if needle in line]
+
+
+def validate_port_available(port: int) -> None:
+    if port in {22, 53, 25, 110, 143, 587, 993, 995}:
+        raise ValueError("этот системный/почтовый порт не рекомендуется использовать")
+    occupants = port_occupants(port)
+    if occupants:
+        raise ValueError(f"порт уже занят ({occupants[0]})")
 
 def next_field(values: dict) -> str | None:
     for field in BASE_FIELDS:

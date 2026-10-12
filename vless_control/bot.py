@@ -5,7 +5,7 @@ import os
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from .profile_wizard import PROMPTS, accept_value, next_field
+from .profile_wizard import PROMPTS, PREFERRED_PORT_HINT, accept_value, next_field, validate_port_available
 from .registry import Registry, vless_uri
 
 
@@ -280,7 +280,9 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             return
         try:
             values = accept_value(values, field, text)
-        except ValueError as exc:
+            if field == "port":
+                validate_port_available(values["port"])
+        except (ValueError, RuntimeError) as exc:
             await update.effective_message.reply_text(f"Ошибка: {exc}\n{PROMPTS[field]}")
             return
         context.user_data["profile_values"] = values
@@ -294,7 +296,10 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 await update.effective_message.reply_text(f"Профиль не создан ({type(exc).__name__}). Проверьте данные и повторите.")
                 context.user_data.pop("profile_values", None)
         else:
-            await update.effective_message.reply_text(PROMPTS[field])
+            prompt = PROMPTS[field]
+            if field == "port":
+                prompt = f"{PREFERRED_PORT_HINT}\n\n{prompt}"
+            await update.effective_message.reply_text(prompt)
         return
     if text == "👤 Пользователи":
         await users(update, context)

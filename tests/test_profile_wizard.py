@@ -1,10 +1,11 @@
 import unittest
+from unittest import mock
 import base64
 import tempfile
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from vless_control.profile_wizard import accept_value, next_field
+from vless_control.profile_wizard import accept_value, next_field, validate_port_available
 from vless_control.registry import Registry, vless_uri
 
 
@@ -30,6 +31,14 @@ class ProfileWizardTests(unittest.TestCase):
             accept_value(values, "path", "invalid")
         values = accept_value(values, "path", "/vless")
         self.assertIsNone(next_field(values))
+
+    def test_port_check_rejects_reserved_and_occupied_ports(self):
+        with self.assertRaisesRegex(ValueError, "системный"):
+            validate_port_available(22)
+        with mock.patch("subprocess.run", return_value=type("R", (), {"stdout":"LISTEN 0 128 0.0.0.0:12345 0.0.0.0:* users:(('xray',pid=1))\\n"})()):
+            with self.assertRaisesRegex(ValueError, "занят"):
+                validate_port_available(12345)
+
 
     def test_rejects_invalid_port_and_reality_ws(self):
         with self.assertRaisesRegex(ValueError, "числом"):
