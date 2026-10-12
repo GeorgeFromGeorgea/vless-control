@@ -29,7 +29,7 @@ def registry() -> Registry:
 
 CANCEL_TEXTS = {"Отмена", "❌ Отмена", "Отменить"}
 STATE_KEYS = (
-    "awaiting_new_label", "awaiting_new_duration", "awaiting_manage_user", "awaiting_manage_action", "awaiting_delete_key", "profile_values", "link_users", "delete_key_choices", "manage_users",
+    "awaiting_new_label", "awaiting_new_duration", "awaiting_manage_user", "awaiting_manage_action", "awaiting_delete_key", "profile_values", "delete_key_choices", "manage_users",
 )
 
 
@@ -38,13 +38,13 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     for key in STATE_KEYS:
         context.user_data.pop(key, None)
-    for key in ("awaiting_manage_confirm", "awaiting_delete_key", "delete_key_choices", "manage_id", "manage_users", "assign_users", "assign_profiles", "selected_assign_user"):
+    for key in ("awaiting_manage_confirm", "awaiting_delete_key", "delete_key_choices", "manage_id", "manage_users", "assign_users", "assign_profiles", "selected_assign_user", "link_users"):
         context.user_data.pop(key, None)
     await update.effective_message.reply_text("Действие отменено.", reply_markup=main_menu_keyboard())
 
 
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
-    keyboard = [["🔑 Получить ключ"], ["👤 Пользователи", "📡 Мониторинг"], ["➕ Новый ключ", "⚙️ Управление ключами"], ["🔑 Профили", "➕ Профиль"], ["🔗 Выдать ссылки"]]
+    keyboard = [["🔑 Получить ключ"], ["👤 Пользователи", "📡 Мониторинг"], ["⚙️ Управление ключами"], ["🔑 Профили", "➕ Профиль"]]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
 
@@ -273,7 +273,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if context.user_data.get("profile_values") is not None:
         values = context.user_data["profile_values"]
         field = next_field(values)
-        if text in {"👤 Пользователи", "➕ Новый ключ", "➕ Профиль", "🔑 Профили", "🔗 Выдать ссылки", "🔑 Получить ключ"}:
+        if text in {"👤 Пользователи", "➕ Профиль", "🔑 Профили", "🔑 Получить ключ"}:
             await update.effective_message.reply_text(f"Выберите или введите значение для поля. {PROMPTS[field]} Нажмите «Отмена» для выхода.")
             return
         try:
@@ -323,13 +323,6 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             [[f"#{r['id']} {r['label']}"] for r in rows] + [["❌ Отмена"]], resize_keyboard=True))
         context.user_data["manage_actions"] = True
         return
-    elif text == "➕ Новый ключ":
-        context.user_data.pop("profile_values", None)
-        context.user_data.pop("new_label", None)
-        context.user_data.pop("awaiting_new_duration", None)
-        context.user_data["awaiting_new_label"] = True
-        await update.effective_message.reply_text("Введите метку нового пользователя (1–80 символов), либо нажмите «Отмена».")
-        return
     elif context.user_data.get("awaiting_new_label"):
         context.user_data.pop("awaiting_new_label", None)
         context.user_data["new_label"] = text
@@ -340,8 +333,6 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.effective_message.reply_text(PROMPTS["name"])
     elif text == "🔑 Профили":
         await profiles(update, context)
-    elif text == "🔗 Выдать ссылки":
-        await choose_links(update, context)
 
 
 async def send_links(update: Update, user_id: int) -> None:
