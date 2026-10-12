@@ -3,6 +3,25 @@
 set -u
 
 printf '%s\n\n' 'ПРОВЕРКА СЕРВЕРА ПЕРЕД УСТАНОВКОЙ'
+printf '%s\n' 'УСТАНОВЛЕННЫЕ VPN/XRAY-КОМПОНЕНТЫ'
+
+component_found=0
+for path in /usr/local/bin/xray /usr/bin/xray /usr/sbin/xray /etc/xray /usr/local/etc/xray \
+            /etc/systemd/system/xray.service /lib/systemd/system/xray.service; do
+  if [[ -e "$path" ]]; then
+    component_found=1
+    printf -- '- найдено: %s\n' "$path"
+  fi
+done
+if command -v dpkg-query >/dev/null 2>&1 && dpkg-query -W -f='${Status}' xray 2>/dev/null | grep -q 'install ok installed'; then
+  component_found=1
+  printf '%s\n' '- установлен пакет xray'
+fi
+if pgrep -a -f '(^|/)(xray|amnezia|wireguard)' 2>/dev/null; then
+  component_found=1
+fi
+(( component_found )) || printf '%s\n' '- Xray-компоненты по стандартным путям и среди процессов не найдены'
+
 printf '%s\n' 'ЗАНЯТЫЕ ПОРТЫ'
 
 ss_output=$(ss -H -ltnup 2>/dev/null || true)
