@@ -183,6 +183,13 @@ class RuntimeService:
                         check=False, capture_output=True, text=True, timeout=5,
                     )
                     if session.returncode != 0:
+                        session_error = (session.stderr or session.stdout or "").lower()
+                        # Xray returns NotFound when this user has no active
+                        # session. That is a valid offline result, not a
+                        # failure of the whole monitoring request.
+                        if "not found" in session_error or "notfound" in session_error:
+                            connections[user["id"]] = 0
+                            continue
                         raise RuntimeError("Xray per-user session query failed")
                     session_raw = json.loads(session.stdout or "{}")
                     ips = session_raw.get("ips") if isinstance(session_raw, dict) else None

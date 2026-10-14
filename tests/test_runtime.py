@@ -162,6 +162,30 @@ class RuntimeTests(unittest.TestCase):
             report=self.service.monitor()
         self.assertTrue(report[0]["online"])
         self.assertEqual(report[0]["connections"], 2)
+
+    def test_monitor_per_user_not_found_means_zero_connections_not_global_unknown(self):
+        online_user=self.service.create("monitor-one-online")
+        offline_user=self.service.create("monitor-one-offline")
+        config=json.loads(self.path.read_text())
+        config["api"]={"tag":"api","services":["StatsService","HandlerService"]}
+        config["stats"]={}
+        config["inbounds"].append({"tag":"api","listen":"127.0.0.1","port":10085,"protocol":"dokodemo-door"})
+        config["routing"]={"rules":[{"type":"field","inboundTag":["api"],"outboundTag":"api"}]}
+        self.path.write_text(json.dumps(config))
+        users_response={"users":["user>>>vless-control-"+online_user["uuid"]+">>>online"]}
+        not_found=SimpleNamespace(stdout="",stderr="failed to get stats: user not found",returncode=1)
+        session=SimpleNamespace(stdout=json.dumps({"ips":{"198.51.100.7":1}}),stderr="",returncode=0)
+        with patch("vless_control.runtime.subprocess.run", side_effect=[
+            SimpleNamespace(stdout=json.dumps(users_response),stderr="",returncode=0),not_found,session
+        ]):
+            report=self.service.monitor()
+        by_id={row["id"]:row for row in report}
+        self.assertTrue(by_id[online_user["id"]]["online"])
+        self.assertEqual(by_id[online_user["id"]]["connections"],1)
+        self.assertFalse(by_id[offline_user["id"]]["online"])
+        self.assertEqual(by_id[offline_user["id"]]["connections"],0)
+        self.assertNotIn("monitor_error",by_id[offline_user["id"]])
+
     def test_monitor_empty_stats_response_is_unknown_until_probe(self):
         item=self.service.create("monitor-empty")
         config=json.loads(self.path.read_text())
